@@ -146,7 +146,6 @@ def _metadata(statistic_id: str, nome: str) -> dict:
         "source": DOMAIN,
         "statistic_id": statistic_id,
         "unit_of_measurement": "kWh",
-        "unit_class": "energy",
     }
 
 
