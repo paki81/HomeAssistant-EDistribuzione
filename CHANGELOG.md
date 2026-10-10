@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.3
+### Fixed
+- Login and token refresh no longer hit E-Distribuzione's anti-bot check
+  ("Pardon Our Interruption", Imperva). Requests now go through
+  `edistribuzione.my.site.com` — the same Salesforce org and the same
+  PortaleClienti community, on the canonical Salesforce domain without
+  Imperva in front — instead of `private.e-distribuzione.it`. Absolute URLs
+  that the portal generates on the protected domain (frontdoor.jsp, the JS
+  redirect to the OTP form, meta Location, form actions) are rewritten to
+  the direct domain before being followed. No changes needed to existing
+  entries: the fix also applies to refresh, so a configured integration
+  recovers on its own at the next update cycle.
+
 ## 0.5.2
 ### Changed
 - *Report issue* in Home Assistant now opens this repository's issues, instead of the original
