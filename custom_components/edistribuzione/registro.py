@@ -49,14 +49,20 @@ def periodo_mese(anno: int, mese: int) -> tuple[date, date]:
 def finestra_lettura_fine_mese(anno: int, mese: int) -> tuple[date, date]:
     """Intervallo in cui cercare la lettura di FINE mese su /reading.
 
-    Le letture ufficiali sono datate al 1° del mese SUCCESSIVO (verificato
-    su risposta reale: measureTs "2026-09-01" con file sorgente "..._202608"
-    - la lettura del 1° settembre chiude agosto). Per il mese M si cerca
-    quindi la lettura misurata all'inizio di M+1, con qualche giorno di
-    margine per misurazioni tardive.
+    Le letture ufficiali sono datate al confine del mese (verificato su
+    risposta reale: measureTs "2026-10-01" con file sorgente "..._202609" -
+    la lettura del 1° ottobre chiude settembre). La finestra parte
+    dall'ultimo giorno del mese e copre la prima metà del mese successivo:
+    contatori diversi pubblicano con tempi diversi (il contatore di scambio
+    il 1°, il contatore di produzione può arrivare giorni dopo o essere
+    datato all'ultimo del mese stesso). Con cadenza mensile ci si aspetta
+    al massimo una lettura in questa finestra.
     """
+    ultimo = (
+        date(anno, 12, 31) if mese == 12 else date(anno, mese + 1, 1) - timedelta(days=1)
+    )
     primo_successivo = date(anno + 1, 1, 1) if mese == 12 else date(anno, mese + 1, 1)
-    return primo_successivo, primo_successivo + timedelta(days=6)
+    return ultimo, primo_successivo + timedelta(days=14)
 
 
 def righe_letture(letture: list[dict]) -> list[dict]:

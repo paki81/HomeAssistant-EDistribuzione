@@ -91,15 +91,17 @@ class TestDateHelper:
         assert registro.periodo_mese(2026, 12) == (date(2026, 12, 1), date(2026, 12, 31))
 
     def test_finestra_lettura_fine_mese(self):
-        """La lettura di fine settembre è datata al 1° ottobre (misura al
-        confine del mese): la finestra è nel mese successivo, non nel mese."""
+        """La lettura di fine settembre è datata al confine del mese
+        (misurata il 1° ottobre o il 30 settembre): la finestra copre
+        dall'ultimo del mese a metà del mese successivo, perché contatori
+        diversi pubblicano con tempi diversi."""
         assert registro.finestra_lettura_fine_mese(2026, 9) == (
-            date(2026, 10, 1),
-            date(2026, 10, 7),
+            date(2026, 9, 30),
+            date(2026, 10, 15),
         )
         assert registro.finestra_lettura_fine_mese(2026, 12) == (
-            date(2027, 1, 1),
-            date(2027, 1, 7),
+            date(2026, 12, 31),
+            date(2027, 1, 15),
         )
 
 
@@ -140,8 +142,8 @@ class TestPayload:
         assert payload["periodo_da"] == "2026-09-01"
         assert payload["periodo_a"] == "2026-09-30"
         assert payload["letture"] == [LETTURA]
-        assert payload["lettura_fine_mese_da"] == "2026-10-01"
-        assert payload["lettura_fine_mese_a"] == "2026-10-07"
+        assert payload["lettura_fine_mese_da"] == "2026-09-30"
+        assert payload["lettura_fine_mese_a"] == "2026-10-15"
         assert len(payload["righe"]) == 5
 
 

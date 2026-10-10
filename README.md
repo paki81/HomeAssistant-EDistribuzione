@@ -316,7 +316,7 @@ One JSON object per POD per month:
   "tipo_pod": "produzione",
   "anno": 2026, "mese": 9, "mese_iso": "2026-09",
   "periodo_da": "2026-09-01", "periodo_a": "2026-09-30",
-  "lettura_fine_mese_da": "2026-10-01", "lettura_fine_mese_a": "2026-10-07",
+  "lettura_fine_mese_da": "2026-09-30", "lettura_fine_mese_a": "2026-10-15",
   "letture": [ /* raw API response objects */ ],
   "righe":   [ /* flattened: one row per published slot or power peak
                   (magnitude, slotId, value + measureTs, meterSerialNumber, ...) */ ]
@@ -328,10 +328,10 @@ One JSON object per POD per month:
 meters `T1`/`T2`/`T3` map to F1/F2/F3 and `T4`–`T6` are null) and `value`,
 plus `measureTs` and `meterSerialNumber` from the parent reading.
 
-Note that the official reading is dated at the 1st of the *following*
-month (the reading with `measureTs` 2026-10-01 closes September): the
-export of month M fetches it at the start of M+1, and `lettura_fine_mese_*`
-in the payload tells you which window was queried.
+Note that the official reading is dated at the month boundary (the
+reading with `measureTs` 2026-10-01 closes September): the export of
+month M queries the window from the last day of M to mid-M+1 —
+`lettura_fine_mese_*` in the payload tells you which window was queried.
 
 ## F1 / F2 / F3 time bands
 

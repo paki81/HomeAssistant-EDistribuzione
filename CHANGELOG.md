@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.2
+### Fixed
+- The register export window for the end-of-month reading is wider: it now
+  covers from the last day of the month to mid-next-month. Different
+  meters publish their official reading at different times (the exchange
+  meter on the 1st; the production meter may arrive days later, or be
+  dated at the month's last day) — a 7-day window at the start of the
+  following month could report "readings not published" for a perfectly
+  fine month.
+
 ## 0.6.1
 ### Fixed
 - Readings register export fetched the wrong month's reading: E-Distribuzione
