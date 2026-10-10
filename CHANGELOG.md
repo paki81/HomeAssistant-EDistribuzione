@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.1
+### Fixed
+- Readings register export fetched the wrong month's reading: E-Distribuzione
+  dates the official monthly reading at the 1st of the *following* month
+  (verified on a real response — `measureTs` 2026-09-01 with source file
+  `_202608_`, i.e. the September-1st reading *closes* August). Exporting
+  month M now requests the reading measured at the start of M+1, with a
+  few days of slack. For the sheet's "letture fine mese" this is the right
+  cumulative value.
+- `righe` in the webhook payload now also flattens `publishedPowerPeaks`
+  (POT slots per band), instead of leaving them nested — and no longer
+  repeats the whole peaks array inside every row.
+
 ## 0.6.0
 ### Added
 - Monthly export of E-Distribuzione's official meter readings to an

@@ -46,15 +46,35 @@ def periodo_mese(anno: int, mese: int) -> tuple[date, date]:
     return primo, ultimo
 
 
+def finestra_lettura_fine_mese(anno: int, mese: int) -> tuple[date, date]:
+    """Intervallo in cui cercare la lettura di FINE mese su /reading.
+
+    Le letture ufficiali sono datate al 1° del mese SUCCESSIVO (verificato
+    su risposta reale: measureTs "2026-09-01" con file sorgente "..._202608"
+    - la lettura del 1° settembre chiude agosto). Per il mese M si cerca
+    quindi la lettura misurata all'inizio di M+1, con qualche giorno di
+    margine per misurazioni tardive.
+    """
+    primo_successivo = date(anno + 1, 1, 1) if mese == 12 else date(anno, mese + 1, 1)
+    return primo_successivo, primo_successivo + timedelta(days=6)
+
+
 def righe_letture(letture: list[dict]) -> list[dict]:
-    """Vista piatta: una riga per ogni slot pubblicato (EA/ER/POT per
-    fascia), con i campi della lettura ripetuti su ogni riga. Le chiavi
-    degli slot (magnitude, value, fascia/timeBand, ...) restano quelle
-    grezze dell'API: il connettore a valle le mappa sul foglio."""
+    """Vista piatta: una riga per ogni slot pubblicato (EA/ER per fascia da
+    publishedSlots, POT da publishedPowerPeaks), con i campi della lettura
+    ripetuti su ogni riga. Le chiavi degli slot (magnitude, slotId, value)
+    restano quelle grezze dell'API: il connettore a valle le mappa sul
+    foglio."""
     righe: list[dict] = []
     for lettura in letture:
-        base = {k: v for k, v in lettura.items() if k != "publishedSlots"}
-        for slot in lettura.get("publishedSlots") or []:
+        base = {
+            k: v
+            for k, v in lettura.items()
+            if k not in ("publishedSlots", "publishedPowerPeaks")
+        }
+        for slot in (lettura.get("publishedSlots") or []) + (
+            lettura.get("publishedPowerPeaks") or []
+        ):
             righe.append({**base, **slot})
     return righe
 
@@ -64,6 +84,7 @@ def payload_registro(
 ) -> dict:
     """Payload JSON inviato al webhook per un POD e un mese."""
     primo, ultimo = periodo_mese(anno, mese)
+    lettura_da, lettura_a = finestra_lettura_fine_mese(anno, mese)
     return {
         "tipo": TIPO_EVENTO,
         "pod": pod,
@@ -73,6 +94,8 @@ def payload_registro(
         "mese_iso": f"{anno:04d}-{mese:02d}",
         "periodo_da": primo.isoformat(),
         "periodo_a": ultimo.isoformat(),
+        "lettura_fine_mese_da": lettura_da.isoformat(),
+        "lettura_fine_mese_a": lettura_a.isoformat(),
         "letture": letture,
         "righe": righe_letture(letture),
     }

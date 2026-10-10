@@ -62,6 +62,7 @@ from .const import (
 from .registro import (
     RegistroError,
     async_invia_registro,
+    finestra_lettura_fine_mese,
     mese_precedente,
     payload_registro,
     periodo_mese,
@@ -583,7 +584,9 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         ritardo rispetto alla fine del mese.
         """
         url, segreto = self._webhook_registro  # type: ignore[misc]
-        data_da, data_a = periodo_mese(anno, mese)
+        # La lettura di FINE mese è datata al 1° del mese successivo: vedi
+        # registro.finestra_lettura_fine_mese.
+        data_da, data_a = finestra_lettura_fine_mese(anno, mese)
         letture = await self._api.async_get_reading(pod, data_da, data_a)
         if not letture:
             _LOGGER.info(

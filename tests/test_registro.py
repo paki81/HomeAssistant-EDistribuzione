@@ -55,13 +55,19 @@ from custom_components.edistribuzione.registro import RegistroError  # noqa: E40
 
 from .conftest import POD_A, POD_B  # noqa: E402
 
+# Struttura fedele a una risposta reale dell'endpoint /reading.
 LETTURA = {
-    "POD": POD_A,
-    "readingDate": "20260930",
+    "pod": POD_A,
+    "meterSerialNumber": "23E4E5KE104572837",
+    "measureTs": "2026-10-01T00:00:00+02:00",
     "publishedSlots": [
-        {"magnitude": "EA", "fascia": "T1", "value": 1000.5},
-        {"magnitude": "EA", "fascia": "T2", "value": 2000.25},
-        {"magnitude": "ER", "fascia": "R1", "value": None},
+        {"magnitude": "EA", "slotId": "T1", "value": 1000.5},
+        {"magnitude": "EA", "slotId": "T2", "value": 2000.25},
+        {"magnitude": "ER", "slotId": "T1", "value": None},
+    ],
+    "publishedPowerPeaks": [
+        {"magnitude": "POT", "slotId": "T1", "value": 4.2},
+        {"magnitude": "POT", "slotId": "T2", "value": None},
     ],
 }
 
@@ -84,20 +90,37 @@ class TestDateHelper:
         assert registro.periodo_mese(2028, 2) == (date(2028, 2, 1), date(2028, 2, 29))
         assert registro.periodo_mese(2026, 12) == (date(2026, 12, 1), date(2026, 12, 31))
 
+    def test_finestra_lettura_fine_mese(self):
+        """La lettura di fine settembre è datata al 1° ottobre (misura al
+        confine del mese): la finestra è nel mese successivo, non nel mese."""
+        assert registro.finestra_lettura_fine_mese(2026, 9) == (
+            date(2026, 10, 1),
+            date(2026, 10, 7),
+        )
+        assert registro.finestra_lettura_fine_mese(2026, 12) == (
+            date(2027, 1, 1),
+            date(2027, 1, 7),
+        )
+
 
 class TestRigheLetture:
-    def test_una_riga_per_slot_con_campi_della_lettura(self):
+    def test_una_riga_per_slot_e_picco_con_campi_della_lettura(self):
         righe = registro.righe_letture([LETTURA])
-        assert len(righe) == 3
+        # 3 publishedSlots + 2 publishedPowerPeaks
+        assert len(righe) == 5
         assert righe[0] == {
-            "POD": POD_A,
-            "readingDate": "20260930",
+            "pod": POD_A,
+            "meterSerialNumber": "23E4E5KE104572837",
+            "measureTs": "2026-10-01T00:00:00+02:00",
             "magnitude": "EA",
-            "fascia": "T1",
+            "slotId": "T1",
             "value": 1000.5,
         }
         # value: null resta None, non sparisce né diventa 0.
         assert righe[2]["value"] is None and righe[2]["magnitude"] == "ER"
+        # Anche i picchi di potenza finiscono in righe, con magnitude POT.
+        assert righe[3]["magnitude"] == "POT" and righe[3]["value"] == 4.2
+        assert "publishedSlots" not in righe[0] and "publishedPowerPeaks" not in righe[0]
 
     def test_lettura_senza_slot_non_produce_righe(self):
         assert registro.righe_letture([{"POD": POD_A}]) == []
@@ -117,7 +140,9 @@ class TestPayload:
         assert payload["periodo_da"] == "2026-09-01"
         assert payload["periodo_a"] == "2026-09-30"
         assert payload["letture"] == [LETTURA]
-        assert len(payload["righe"]) == 3
+        assert payload["lettura_fine_mese_da"] == "2026-10-01"
+        assert payload["lettura_fine_mese_a"] == "2026-10-07"
+        assert len(payload["righe"]) == 5
 
 
 class _RispostaPost:
@@ -231,6 +256,15 @@ class TestExportAutomatico:
         assert url == "http://n8n.local/webhook/abc"
         assert segreto is None
         assert payload["pod"] == POD_A
+        # La richiesta API copre la finestra nel mese SUCCESSIVO: la lettura
+        # di fine mese è datata al 1° del mese dopo.
+        anno, mese = registro.mese_precedente(date.today())
+        da_atteso, a_atteso = registro.finestra_lettura_fine_mese(anno, mese)
+        assert coordinator._api.async_get_reading.await_args.args == (
+            POD_A,
+            da_atteso,
+            a_atteso,
+        )
         anno, mese = registro.mese_precedente(date.today())
         assert payload["mese_iso"] == f"{anno:04d}-{mese:02d}"
         assert payload["letture"] == [LETTURA]
