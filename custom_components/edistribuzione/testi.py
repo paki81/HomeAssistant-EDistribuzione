@@ -45,6 +45,7 @@ TESTI: dict[str, dict[str, str]] = {
         "nota_reauth": " Stai aggiornando le credenziali per i POD: {pods}.",
         "nessun_pod": "nessuno",
         "nessun_dato_pod": "nessun dato per il periodo richiesto",
+        "letture_non_pubblicate": "letture ufficiali del mese non ancora pubblicate",
     },
     "en": {
         "modello_account": "API account",
@@ -72,6 +73,7 @@ TESTI: dict[str, dict[str, str]] = {
         "nota_reauth": " You are updating the credentials for these PODs: {pods}.",
         "nessun_pod": "none",
         "nessun_dato_pod": "no data for the requested period",
+        "letture_non_pubblicate": "official monthly readings not published yet",
     },
 }
 

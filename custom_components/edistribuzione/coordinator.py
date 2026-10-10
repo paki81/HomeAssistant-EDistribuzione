@@ -41,6 +41,9 @@ from .const import (
     CONF_ORA_RICHIESTA,
     CONF_PODS,
     CONF_REFRESH_TOKEN,
+    CONF_REGISTRO_SEGRETO,
+    CONF_REGISTRO_WEBHOOK,
+    CONF_STATO_REGISTRO,
     CONF_TIPO_POD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
@@ -55,6 +58,13 @@ from .const import (
     RITARDO_DATI_GIORNI,
     TIPO_POD_DEFAULT,
     TIPO_POD_PRODUZIONE,
+)
+from .registro import (
+    RegistroError,
+    async_invia_registro,
+    mese_precedente,
+    payload_registro,
+    periodo_mese,
 )
 from .statistics import async_get_ultima_data_disponibile, async_import_curva_giornaliera
 from .testi import testo
@@ -139,6 +149,7 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         # E-Distribuzione (vedi _async_ensure_token e async_setup_entry).
         self.accesso_bloccato = False
         session = async_get_clientsession(hass)
+        self._session = session
         self._auth = AuthClient(session)
         self._api = ApiClient(session, access_token="")
 
@@ -529,7 +540,171 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                 "kwh_immessa_ultimo_giorno": kwh_immessa,
             }
 
+        # L'export verso il webhook è accessorio: un suo fallimento non deve
+        # far fallire il ciclo di aggiornamento dei dati.
+        try:
+            await self._async_esporta_registro()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Export del registro letture fallito")
+
         return {"by_pod": by_pod}
+
+    # ------------------------------------------------------------------
+    # Export registro letture verso webhook (officine elettriche, ADM)
+    # ------------------------------------------------------------------
+
+    @property
+    def _webhook_registro(self) -> tuple[str, str | None] | None:
+        """(url, segreto) del webhook configurato nelle opzioni, o None."""
+        url = (self.entry.options.get(CONF_REGISTRO_WEBHOOK) or "").strip()
+        if not url:
+            return None
+        segreto = (self.entry.options.get(CONF_REGISTRO_SEGRETO) or "").strip() or None
+        return url, segreto
+
+    def _stato_registro(self) -> dict[str, dict[str, str]]:
+        """Stato per-POD dell'export: {"esportato": "YYYY-MM",
+        "tentativo": "YYYY-MM-DD"}."""
+        grezzo = self.entry.data.get(CONF_STATO_REGISTRO) or {}
+        return {pod: dict(stato) for pod, stato in grezzo.items()}
+
+    def _scrivi_stato_registro(self, stato: dict[str, dict[str, str]]) -> None:
+        pulito = {pod: st for pod, st in stato.items() if st}
+        if pulito != self.entry.data.get(CONF_STATO_REGISTRO):
+            self.hass.config_entries.async_update_entry(
+                self.entry, data={**self.entry.data, CONF_STATO_REGISTRO: pulito}
+            )
+
+    async def _esporta_mese_registro(self, pod: str, anno: int, mese: int) -> bool:
+        """Richiede le letture ufficiali del mese e le POSTa al webhook.
+
+        False se E-Distribuzione non le ha ancora pubblicate (si riprova al
+        prossimo giro): le letture mensili ufficiali arrivano con giorni di
+        ritardo rispetto alla fine del mese.
+        """
+        url, segreto = self._webhook_registro  # type: ignore[misc]
+        data_da, data_a = periodo_mese(anno, mese)
+        letture = await self._api.async_get_reading(pod, data_da, data_a)
+        if not letture:
+            _LOGGER.info(
+                "POD %s: letture ufficiali di %04d-%02d non ancora pubblicate, "
+                "si riprova domani",
+                pod,
+                anno,
+                mese,
+            )
+            return False
+        payload = payload_registro(pod, self.tipo_pod(pod), anno, mese, letture)
+        await async_invia_registro(self._session, url, segreto, payload)
+        _LOGGER.info(
+            "POD %s: letture ufficiali di %04d-%02d inviate al webhook (%d letture)",
+            pod,
+            anno,
+            mese,
+            len(letture),
+        )
+        return True
+
+    async def _async_esporta_registro(self) -> None:
+        """Export automatico del mese precedente, se il webhook è attivo.
+
+        Per ciascun POD: un solo tentativo al giorno (le letture arrivano
+        con ritardo), finché il mese risulta esportato. Gli errori restano
+        nei log e fanno ritentare domani: mai far fallire il ciclo dati.
+        """
+        webhook = self._webhook_registro
+        if webhook is None:
+            return
+        oggi = dt_util.now().date()
+        anno, mese = mese_precedente(oggi)
+        chiave_mese = f"{anno:04d}-{mese:02d}"
+        oggi_iso = oggi.isoformat()
+        stato = self._stato_registro()
+        sporco = False
+        for pod in self.pods:
+            st = stato.setdefault(pod, {})
+            if st.get("esportato") == chiave_mese or st.get("tentativo") == oggi_iso:
+                continue
+            st["tentativo"] = oggi_iso
+            sporco = True
+            try:
+                if await self._esporta_mese_registro(pod, anno, mese):
+                    st["esportato"] = chiave_mese
+            except (ApiError, RegistroError) as err:
+                _LOGGER.warning(
+                    "POD %s: export del registro di %s fallito (%s), si riprova domani",
+                    pod,
+                    chiave_mese,
+                    err,
+                )
+        if sporco:
+            self._scrivi_stato_registro(stato)
+
+    async def async_esporta_registro(
+        self, mese_iso: str, pod: str | None = None
+    ) -> None:
+        """Export manuale di un mese (azione edistribuzione.esporta_registro).
+
+        'mese_iso' nel formato 'YYYY-MM'. Con pod=None esporta tutti i POD
+        della entry. A differenza dell'export automatico gli errori sono
+        sollevati all'interfaccia: un'azione manuale deve dire se è
+        fallita. Aggiorna anche lo stato persistito, così l'automatico non
+        re-invia un mese già esportato a mano.
+        """
+        webhook = self._webhook_registro
+        if webhook is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="registro_webhook_non_configurato",
+            )
+        try:
+            anno, mese = int(mese_iso[:4]), int(mese_iso[5:7])
+            assert len(mese_iso) == 7 and mese_iso[4] == "-"
+            periodo_mese(anno, mese)
+        except (ValueError, IndexError, AssertionError) as err:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="mese_non_valido",
+                translation_placeholders={"mese": str(mese_iso)},
+            ) from err
+        if pod is not None and pod not in self.pods:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="pod_non_configurato",
+                translation_placeholders={"pod": pod, "pods": ", ".join(self.pods)},
+            )
+        pod_da_esportare = [pod] if pod else list(self.pods)
+
+        await self._async_ensure_token()
+
+        chiave_mese = f"{anno:04d}-{mese:02d}"
+        stato = self._stato_registro()
+        esportati: list[str] = []
+        fallimenti: list[str] = []
+        for pod_corrente in pod_da_esportare:
+            try:
+                esito = await self._esporta_mese_registro(pod_corrente, anno, mese)
+            except (ApiError, RegistroError) as err:
+                fallimenti.append(f"{pod_corrente}: {err}")
+                continue
+            if not esito:
+                fallimenti.append(
+                    f"{pod_corrente}: {testo(self.lingua, 'letture_non_pubblicate')}"
+                )
+                continue
+            stato.setdefault(pod_corrente, {})["esportato"] = chiave_mese
+            esportati.append(pod_corrente)
+        if esportati:
+            self._scrivi_stato_registro(stato)
+        if not esportati:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="export_registro_fallito",
+                translation_placeholders={
+                    "mese": chiave_mese,
+                    "dettagli": "; ".join(fallimenti),
+                },
+            )
 
     # ------------------------------------------------------------------
     # Recupero storico manuale (azione edistribuzione.recupera_storico)

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0
+### Added
+- Monthly export of E-Distribuzione's official meter readings to an
+  external webhook (e.g. a self-hosted n8n instance mapping them onto a
+  pre-formatted Google Sheet) — meant for the meter readings register
+  ("registro delle letture") that electric workshops (PV plants above
+  20 kW with self-consumption) must keep for the Italian customs agency
+  (ADM, Circolare 27/2025 allows the electronic format).
+  - New "Readings register (webhook)" option in the integration options:
+    webhook URL (empty = disabled) plus an optional secret sent as
+    `Authorization: Bearer` (n8n "Header Auth").
+  - Automatic export: at the start of each month the previous month's
+    official readings (`/reading` endpoint: cumulative EA/ER per time band
+    plus power peaks) are POSTed to the webhook as soon as they are
+    published — one attempt per day per POD until they arrive, per-POD
+    progress persisted across restarts. Webhook failures never break the
+    data update cycle.
+  - New `edistribuzione.esporta_registro` action (device + month YYYY-MM)
+    to export a chosen month on demand — for backfilling past months.
+  - Payload sent per POD: raw `letture` array plus a flattened `righe`
+    view (one row per published slot, for n8n Split Out nodes) with POD,
+    meter role, month and period metadata.
+
 ## 0.5.4
 ### Fixed
 - An account with an expired password used to fail the setup with the

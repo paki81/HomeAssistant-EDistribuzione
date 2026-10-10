@@ -45,3 +45,33 @@ configura_energy_dashboard:
     produzione -> sorgente solare). Azione idempotente: non sovrascrive né
     duplica sorgenti già presenti (incluse quelle configurate a mano), sicura
     da rilanciare dopo aver aggiunto un POD o cambiato un ruolo.
+
+esporta_registro:
+  name: Esporta registro letture
+  description: >-
+    Invia al webhook configurato nelle opzioni (es. n8n -> Google Sheets) le
+    letture ufficiali mensili di E-Distribuzione per un mese a scelta:
+    pensato per il registro delle letture delle officine elettriche
+    (impianti oltre 20 kW) richiesto dall'Agenzia delle Dogane. Utile anche
+    per il recupero di mesi passati: l'export automatico invia solo il mese
+    appena concluso. Richiede il webhook configurato nelle opzioni
+    dell'integrazione.
+  fields:
+    device_id:
+      name: Configurazione / POD
+      description: >-
+        Scegli il dispositivo per cui esportare il mese. Il dispositivo
+        "E-Distribuzione" (account) esporta tutti i POD della configurazione
+        insieme; il dispositivo di un singolo POD esporta solo quello.
+      required: true
+      selector:
+        device:
+          filter:
+            integration: edistribuzione
+    mese:
+      name: Mese
+      description: Mese da esportare, nel formato YYYY-MM.
+      required: true
+      example: "2026-09"
+      selector:
+        text:

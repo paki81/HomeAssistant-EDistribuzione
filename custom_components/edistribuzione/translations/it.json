@@ -52,7 +52,8 @@
           "tipo_pod": "Tipo di contatore per POD",
           "aggiungi_pod": "Aggiungi POD",
           "rimuovi_pod": "Rimuovi POD",
-          "orario": "Orario della richiesta"
+          "orario": "Orario della richiesta",
+          "registro": "Registro letture (webhook)"
         }
       },
       "tipo_pod": {
@@ -79,10 +80,19 @@
         "data": {
           "ora_richiesta": "Ora"
         }
+      },
+      "registro": {
+        "title": "Registro letture (webhook)",
+        "description": "Export mensile delle letture ufficiali di E-Distribuzione verso un webhook esterno (es. n8n, da mappare su un foglio Google): per il registro delle letture delle officine elettriche (impianti oltre 20 kW) richiesto dall'Agenzia delle Dogane. A inizio di ogni mese vengono inviate automaticamente le letture del mese precedente, appena pubblicate. Lascia l'URL vuoto per disattivare l'export.",
+        "data": {
+          "registro_webhook": "URL del webhook",
+          "registro_segreto": "Segreto (opzionale, inviato come Authorization: Bearer)"
+        }
       }
     },
     "error": {
-      "non_puoi_rimuoverli_tutti": "Non puoi rimuovere tutti i POD da qui: rimuovi direttamente l'integrazione se vuoi svuotarla del tutto"
+      "non_puoi_rimuoverli_tutti": "Non puoi rimuovere tutti i POD da qui: rimuovi direttamente l'integrazione se vuoi svuotarla del tutto",
+      "url_non_valido": "L'URL del webhook deve iniziare con http:// o https://"
     },
     "abort": {
       "nessun_pod": "Non ci sono POD configurati da rimuovere",
@@ -170,6 +180,20 @@
     "configura_energy_dashboard": {
       "name": "Configura Energy Dashboard",
       "description": "Aggiunge alla Energy Dashboard le statistiche di tutti i POD configurati, in base al ruolo assegnato a ciascuno (scambio -> sorgente rete, produzione -> sorgente solare). Azione idempotente: non sovrascrive né duplica sorgenti già presenti (incluse quelle configurate a mano), sicura da rilanciare dopo aver aggiunto un POD o cambiato un ruolo."
+    },
+    "esporta_registro": {
+      "name": "Esporta registro letture",
+      "description": "Invia al webhook configurato nelle opzioni (es. n8n -> Google Sheets) le letture ufficiali mensili di E-Distribuzione per un mese a scelta: pensato per il registro delle letture delle officine elettriche (impianti oltre 20 kW) richiesto dall'Agenzia delle Dogane. Utile anche per il recupero di mesi passati: l'export automatico invia solo il mese appena concluso.",
+      "fields": {
+        "device_id": {
+          "name": "Configurazione / POD",
+          "description": "Scegli il dispositivo per cui esportare il mese. Il dispositivo \"E-Distribuzione\" (account) esporta tutti i POD della configurazione insieme; il dispositivo di un singolo POD esporta solo quello."
+        },
+        "mese": {
+          "name": "Mese",
+          "description": "Mese da esportare, nel formato YYYY-MM."
+        }
+      }
     }
   },
   "exceptions": {
@@ -205,6 +229,15 @@
     },
     "accesso_bloccato": {
       "message": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot. I consumi riprendono ad aggiornarsi appena l'accesso torna disponibile."
+    },
+    "registro_webhook_non_configurato": {
+      "message": "Nessun webhook configurato: imposta l'URL del webhook nelle opzioni dell'integrazione (Registro letture)."
+    },
+    "mese_non_valido": {
+      "message": "Mese '{mese}' non valido: usa il formato YYYY-MM."
+    },
+    "export_registro_fallito": {
+      "message": "Export del registro di {mese} non riuscito per nessun POD. {dettagli}"
     }
   },
   "issues": {

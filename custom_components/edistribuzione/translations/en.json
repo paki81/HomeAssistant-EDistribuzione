@@ -52,7 +52,8 @@
           "tipo_pod": "Meter type per POD",
           "aggiungi_pod": "Add POD",
           "rimuovi_pod": "Remove POD",
-          "orario": "Request time"
+          "orario": "Request time",
+          "registro": "Readings register (webhook)"
         }
       },
       "tipo_pod": {
@@ -79,10 +80,19 @@
         "data": {
           "ora_richiesta": "Hour"
         }
+      },
+      "registro": {
+        "title": "Readings register (webhook)",
+        "description": "Monthly export of E-Distribuzione official readings to an external webhook (e.g. n8n, to be mapped onto a Google Sheet): for the meter readings register required by the Italian customs agency (ADM) for electric workshops (plants above 20 kW). At the start of each month the previous month's readings are sent automatically as soon as they are published. Leave the URL empty to disable the export.",
+        "data": {
+          "registro_webhook": "Webhook URL",
+          "registro_segreto": "Secret (optional, sent as Authorization: Bearer)"
+        }
       }
     },
     "error": {
-      "non_puoi_rimuoverli_tutti": "You cannot remove all PODs from here: remove the integration itself if you want to empty it completely"
+      "non_puoi_rimuoverli_tutti": "You cannot remove all PODs from here: remove the integration itself if you want to empty it completely",
+      "url_non_valido": "The webhook URL must start with http:// or https://"
     },
     "abort": {
       "nessun_pod": "There are no configured PODs to remove",
@@ -170,6 +180,20 @@
     "configura_energy_dashboard": {
       "name": "Configure Energy Dashboard",
       "description": "Adds the statistics of all configured PODs to the Energy Dashboard, according to the role assigned to each one (exchange -> grid source, production -> solar source). Idempotent action: it does not overwrite or duplicate sources that already exist (including those configured by hand), safe to run again after adding a POD or changing a role."
+    },
+    "esporta_registro": {
+      "name": "Export readings register",
+      "description": "Sends E-Distribuzione official monthly readings for a chosen month to the webhook configured in the options (e.g. n8n -> Google Sheets): meant for the meter readings register required by the Italian customs agency (ADM) for electric workshops (plants above 20 kW). Also useful to backfill past months: the automatic export only sends the month that just ended.",
+      "fields": {
+        "device_id": {
+          "name": "Configuration / POD",
+          "description": "Choose the device to export the month for. The \"E-Distribuzione\" (account) device exports all PODs of the configuration together; a single-POD device exports only that one."
+        },
+        "mese": {
+          "name": "Month",
+          "description": "Month to export, in YYYY-MM format."
+        }
+      }
     }
   },
   "exceptions": {
@@ -205,6 +229,15 @@
     },
     "accesso_bloccato": {
       "message": "E-Distribuzione is currently blocking automated access with an anti-bot check. Consumption data will update again as soon as access is available."
+    },
+    "registro_webhook_non_configurato": {
+      "message": "No webhook configured: set the webhook URL in the integration options (Readings register)."
+    },
+    "mese_non_valido": {
+      "message": "Invalid month '{mese}': use the YYYY-MM format."
+    },
+    "export_registro_fallito": {
+      "message": "Register export for {mese} failed for every POD. {dettagli}"
     }
   },
   "issues": {

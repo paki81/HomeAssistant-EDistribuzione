@@ -36,6 +36,8 @@ from .const import (
     CONF_ORA_RICHIESTA,
     CONF_PODS,
     CONF_REFRESH_TOKEN,
+    CONF_REGISTRO_SEGRETO,
+    CONF_REGISTRO_WEBHOOK,
     CONF_TIPO_POD,
     DOMAIN,
     ORA_MINIMA_RICHIESTA,
@@ -335,7 +337,7 @@ class EdistribuzioneOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["tipo_pod", "aggiungi_pod", "rimuovi_pod", "orario"],
+            menu_options=["tipo_pod", "aggiungi_pod", "rimuovi_pod", "orario", "registro"],
         )
 
     async def async_step_tipo_pod(self, user_input: dict[str, Any] | None = None):
@@ -386,6 +388,43 @@ class EdistribuzioneOptionsFlow(config_entries.OptionsFlow):
                 )
             }),
             description_placeholders={"ora_attuale": str(attuale)},
+        )
+
+    async def async_step_registro(self, user_input: dict[str, Any] | None = None):
+        """Webhook per l'export mensile delle letture ufficiali (registro
+        ADM delle officine elettriche): URL vuoto disattiva l'export. Nessun
+        reload necessario: il coordinator rilegge le opzioni a ogni ciclo."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            url = (user_input.get(CONF_REGISTRO_WEBHOOK) or "").strip()
+            segreto = (user_input.get(CONF_REGISTRO_SEGRETO) or "").strip()
+            if url and not url.startswith(("http://", "https://")):
+                errors[CONF_REGISTRO_WEBHOOK] = "url_non_valido"
+            else:
+                nuove_opzioni = {
+                    **self.config_entry.options,
+                    CONF_REGISTRO_WEBHOOK: url,
+                    CONF_REGISTRO_SEGRETO: segreto,
+                }
+                return self.async_create_entry(title="", data=nuove_opzioni)
+
+        return self.async_show_form(
+            step_id="registro",
+            data_schema=vol.Schema({
+                vol.Optional(
+                    CONF_REGISTRO_WEBHOOK,
+                    default=self.config_entry.options.get(CONF_REGISTRO_WEBHOOK, ""),
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
+                ),
+                vol.Optional(
+                    CONF_REGISTRO_SEGRETO,
+                    default=self.config_entry.options.get(CONF_REGISTRO_SEGRETO, ""),
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                ),
+            }),
+            errors=errors,
         )
 
     async def async_step_aggiungi_pod(self, user_input: dict[str, Any] | None = None):

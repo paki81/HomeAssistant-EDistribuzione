@@ -26,11 +26,17 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 SERVICE_RECUPERA_STORICO = "recupera_storico"
 SERVICE_CONFIGURA_ENERGY_DASHBOARD = "configura_energy_dashboard"
+SERVICE_ESPORTA_REGISTRO = "esporta_registro"
 
 SCHEMA_RECUPERA_STORICO = vol.Schema({
     vol.Required("data_da"): cv.date,
     vol.Required("data_a"): cv.date,
     vol.Required("device_id"): cv.string,
+})
+
+SCHEMA_ESPORTA_REGISTRO = vol.Schema({
+    vol.Required("device_id"): cv.string,
+    vol.Required("mese"): cv.string,
 })
 
 
@@ -112,6 +118,17 @@ async def _async_registra_servizi(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_CONFIGURA_ENERGY_DASHBOARD, _configura_energy_dashboard
     )
 
+    async def _esporta_registro(call: ServiceCall) -> None:
+        coordinator, pod = _risolvi_coordinator_e_pod_da_device(hass, call.data["device_id"])
+        await coordinator.async_esporta_registro(call.data["mese"], pod=pod)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ESPORTA_REGISTRO,
+        _esporta_registro,
+        schema=SCHEMA_ESPORTA_REGISTRO,
+    )
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Inizializza l'integrazione a partire da una config entry."""
@@ -160,5 +177,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ir.async_delete_issue(hass, DOMAIN, ISSUE_ACCESSO_BLOCCATO)
         hass.services.async_remove(DOMAIN, SERVICE_RECUPERA_STORICO)
         hass.services.async_remove(DOMAIN, SERVICE_CONFIGURA_ENERGY_DASHBOARD)
+        hass.services.async_remove(DOMAIN, SERVICE_ESPORTA_REGISTRO)
 
     return True

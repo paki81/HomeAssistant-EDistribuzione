@@ -280,6 +280,51 @@ Self-consumption and total home consumption are calculated by Home
 Assistant from production, injection and grid consumption: no extra sensors
 are needed.
 
+## Readings register (officine elettriche)
+
+PV plants above 20 kW are classified as *officine elettriche* and must keep
+a monthly register of meter readings for the Italian customs agency (ADM);
+Circolare 27/2025 allows keeping it electronically instead of a stamped
+paper register. This integration can push E-Distribuzione's **official
+monthly readings** (cumulative EA/ER per time band plus power peaks, the
+`/reading` endpoint) to an external webhook — e.g. a self-hosted **n8n**
+workflow that writes them into a pre-formatted Google Sheet.
+
+### Setup
+
+1. In **Settings → Devices & services → E-Distribuzione → Configure →
+   Readings register (webhook)** set the webhook URL (e.g. the URL of an
+   n8n *Webhook* node). An optional secret is sent as
+   `Authorization: Bearer <secret>` — configure the same name/value in the
+   n8n node (*Header Auth*). An empty URL disables the export.
+2. At the start of every month the previous month's readings are sent
+   automatically as soon as they are published (one attempt per day per
+   POD, retried until they arrive).
+3. The action **E-Distribuzione: Export readings register**
+   (`edistribuzione.esporta_registro`) exports any chosen month
+   (`YYYY-MM`) on demand, for the whole entry or a single POD — also
+   useful to backfill past months.
+
+### Webhook payload
+
+One JSON object per POD per month:
+
+```json
+{
+  "tipo": "lettura_mensile_edistribuzione",
+  "pod": "IT001E01234567",
+  "tipo_pod": "produzione",
+  "anno": 2026, "mese": 9, "mese_iso": "2026-09",
+  "periodo_da": "2026-09-01", "periodo_a": "2026-09-30",
+  "letture": [ /* raw API response objects */ ],
+  "righe":   [ /* flattened: one row per published slot
+                  (magnitude, fascia/time band, value, reading date, ...) */ ]
+}
+```
+
+`righe` is meant for an n8n *Split Out* node: filter `magnitude == "EA"`,
+map each band to its sheet column, update the row of `mese_iso`.
+
 ## F1 / F2 / F3 time bands
 
 For the **consumption** direction the integration also writes three

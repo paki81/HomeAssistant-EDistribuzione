@@ -130,6 +130,18 @@ CONF_DATA_INSTALLAZIONE = "data_installazione"
 CONF_GIORNI_DA_RIPROVARE = "giorni_da_riprovare"
 CONF_ORA_RICHIESTA = "ora_richiesta"
 
+# Export delle letture ufficiali mensili verso un webhook esterno (es. n8n
+# -> Google Sheets), per le officine elettriche >20 kW che devono tenere il
+# registro ADM delle letture dei contatori. Configurato dalle opzioni; URL
+# vuoto = export disattivo. Il segreto opzionale va come header
+# 'Authorization: Bearer ...'.
+CONF_REGISTRO_WEBHOOK = "registro_webhook"
+CONF_REGISTRO_SEGRETO = "registro_segreto"
+# Stato persistito in entry.data: {pod: {"esportato": "YYYY-MM",
+# "tentativo": "YYYY-MM-DD"}} - mese già inviato e data dell'ultimo
+# tentativo (al massimo uno al giorno, le letture arrivano con ritardo).
+CONF_STATO_REGISTRO = "stato_registro"
+
 # Un giorno resta in coda e viene riprovato ai cicli successivi, abbandonato
 # dopo questo numero di giorni REALI dal primo inserimento (non dopo N
 # tentativi). ~1 settimana copre eventuali ritardi di pubblicazione senza

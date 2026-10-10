@@ -28,6 +28,8 @@ from custom_components.edistribuzione.const import (
     CONF_ORA_RICHIESTA,
     CONF_PODS,
     CONF_REFRESH_TOKEN,
+    CONF_REGISTRO_SEGRETO,
+    CONF_REGISTRO_WEBHOOK,
     CONF_TIPO_POD,
     DOMAIN,
     TIPO_POD_PRODUZIONE,
@@ -299,7 +301,13 @@ async def test_opzioni_menu(hass):
     entry = _entry_edist(hass)
     res = await hass.config_entries.options.async_init(entry.entry_id)
     assert res["type"] == FlowResultType.MENU
-    assert set(res["menu_options"]) == {"tipo_pod", "aggiungi_pod", "rimuovi_pod", "orario"}
+    assert set(res["menu_options"]) == {
+        "tipo_pod",
+        "aggiungi_pod",
+        "rimuovi_pod",
+        "orario",
+        "registro",
+    }
 
 
 async def test_opzioni_orario_salva_valore(hass):
@@ -313,6 +321,49 @@ async def test_opzioni_orario_salva_valore(hass):
     )
     assert res["type"] == FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_ORA_RICHIESTA] == 21
+
+
+async def test_opzioni_registro_salva_url_e_segreto(hass):
+    entry = _entry_edist(hass)
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "registro"}
+    )
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"],
+        {CONF_REGISTRO_WEBHOOK: " https://n8n.example/webhook/x ",
+         CONF_REGISTRO_SEGRETO: "tok"},
+    )
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_REGISTRO_WEBHOOK] == "https://n8n.example/webhook/x"
+    assert entry.options[CONF_REGISTRO_SEGRETO] == "tok"
+
+
+async def test_opzioni_registro_url_non_valido(hass):
+    entry = _entry_edist(hass)
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "registro"}
+    )
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {CONF_REGISTRO_WEBHOOK: "n8n.local/webhook/x"}
+    )
+    assert res["type"] == FlowResultType.FORM
+    assert res["errors"] == {CONF_REGISTRO_WEBHOOK: "url_non_valido"}
+
+
+async def test_opzioni_registro_url_vuoto_disattiva(hass):
+    """URL vuoto = export disattivo: le opzioni si salvano comunque."""
+    entry = _entry_edist(hass)
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "registro"}
+    )
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {CONF_REGISTRO_WEBHOOK: "", CONF_REGISTRO_SEGRETO: ""}
+    )
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_REGISTRO_WEBHOOK] == ""
 
 
 async def test_opzioni_tipo_pod_default_e_scambio(hass):
