@@ -1,9 +1,13 @@
-"""Client di autenticazione per E-Distribuzione (edistribuzione.my.site.com).
+"""Client di autenticazione per E-Distribuzione (Salesforce Experience Cloud).
 
 Il portale risponde su due hostname della stessa org Salesforce: quello
-"custom" (private.e-distribuzione.it) e' dietro Imperva e blocca i client
-non-browser, quindi si usa il dominio canonico *.my.site.com - stesso login,
-stessa community, senza verifica antibot. Dettagli in const.py.
+"custom" (private.e-distribuzione.it) e' il dominio ufficiale ma sta dietro
+Imperva, che da ottobre 2026 blocca i client non-browser; il dominio
+canonico *.my.site.com e' la stessa org/community servita dalla CDN di
+Salesforce senza antibot. Login e refresh partono SEMPRE dall'host primario
+e ripiegano sul diretto solo se arriva la pagina di verifica, cosi'
+l'integrazione torna da sola al dominio ufficiale quando Enel togliera' il
+blocco. Dettagli in const.py.
 
 Login OAuth2 Authorization Code + PKCE standard, ma la parte difficile sta nel
 mezzo: le credenziali si sottomettono via un'azione Aura (Salesforce
@@ -50,21 +54,28 @@ import aiohttp
 
 from .const import (
     AURA_ENDPOINT,
+    GSE_TERNA_PAGE_URL,
     LOGINFLOW_URL,
     OAUTH_AUTHORIZE_URL,
     OAUTH_CLIENT_ID,
     OAUTH_REDIRECT_URI,
     OAUTH_SCOPE,
     OAUTH_TOKEN_URL,
-    SF_BASE,
-    SF_HOST,
-    SF_HOST_BLOCCATO,
-    SF_ORIGIN,
+    SF_FRONTDOOR_URL,
+    SF_HOST_DIRETTO,
+    SF_HOST_PRINCIPALE,
+    SF_HOSTS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 _MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15"
+# Le chiamate Aura delle pagine del portale arrivano da un browser desktop:
+# lo stesso UA usato nella cattura in cui è stata verificata la pipeline.
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
 
 _MAX_REDIRECT_HOPS = 15
 
@@ -140,22 +151,6 @@ _ETICHETTE_CONSENSO = ("consenti", "allow", "approve", "autorizza", "accetta")
 def _contiene(testo: str, marcatori: tuple[str, ...]) -> bool:
     minuscolo = testo.lower()
     return any(marcatore in minuscolo for marcatore in marcatori)
-
-
-def _url_via_host_diretto(url: str) -> str:
-    """Riscrive su SF_HOST gli URL assoluti che il server genera puntando al
-    dominio custom protetto da Imperva (SF_HOST_BLOCCATO).
-
-    Salesforce conosce il proprio dominio pubblico e lo usa negli URL
-    assoluti che produce (returnValue di loginUser con frontdoor.jsp,
-    window.location della pagina-ponte, meta Location, action dei form):
-    seguirli così come sono riporterebbe dentro la verifica antibot che
-    SF_BASE aggira. URL relativi o su altri host passano invariati.
-    """
-    prefisso_bloccato = f"https://{SF_HOST_BLOCCATO}"
-    if url.startswith(prefisso_bloccato):
-        return f"https://{SF_HOST}" + url[len(prefisso_bloccato) :]
-    return url
 
 
 def _scrivi_pagina_debug(html: str, nome_file: str) -> None:
@@ -273,12 +268,21 @@ class ParsingError(AuthError):
     """
 
 
+class AuraSessionScaduta(AuthError):
+    """La sessione web Aura (cookie sid / token CSRF) non è più valida.
+
+    Segnale interno: il chiamante riapre la sessione web con frontdoor e
+    riprova. Non dovrebbe raggiungere l'utente.
+    """
+
+
 async def _get_following_redirects(
     session: aiohttp.ClientSession,
     url: str,
     *,
     params: dict | None = None,
     headers: dict | None = None,
+    riscrivi=None,
 ) -> aiohttp.ClientResponse:
     """GET seguendo i redirect a mano invece di allow_redirects=True.
 
@@ -305,10 +309,12 @@ async def _get_following_redirects(
         resp.close()
         location_url = aiohttp.client.URL(location, encoded=True)
         next_url = location_url if location_url.is_absolute() else resp.url.join(location_url)
-        # Il Location puo' puntare al dominio custom dietro Imperva: va
-        # riscritto sull'host diretto o l'hop successivo trova la pagina
-        # antibot invece della destinazione.
-        next_url = aiohttp.client.URL(_url_via_host_diretto(str(next_url)), encoded=True)
+        # Il Location puo' puntare all'ALTRO dei due host della stessa org
+        # (es. il dominio custom dietro Imperva mentre stiamo usando quello
+        # diretto): va riscritto sull'host attivo o l'hop successivo trova
+        # la pagina antibot invece della destinazione.
+        if riscrivi is not None:
+            next_url = aiohttp.client.URL(riscrivi(str(next_url)), encoded=True)
         resp = await session.get(next_url, headers=headers, allow_redirects=False)
 
     resp.close()
@@ -366,14 +372,45 @@ class AuthClient:
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
+        # Host Salesforce attivo: ogni login e ogni refresh ripartono dal
+        # primario; il diretto subentra solo se il primario risponde con la
+        # pagina antibot (vedi async_begin_login/async_refresh_access_token).
+        self._host = SF_HOST_PRINCIPALE
         self._code_verifier: str | None = None
         self._oauth_state: str | None = None
         self._flow = _LoginFlowState()
+        # Stato della sessione web Aura (vedi _apri_sessione_web): la stringa
+        # aura.context serializzata e il token CSRF delle POST Aura.
+        self._aura_context: str | None = None
+        self._aura_token: str | None = None
         # True/False dopo async_begin_login()/async_resend_otp() a seconda
         # che il portale abbia confermato l'invio del codice; None finché non
         # ci si è arrivati. Il config flow lo usa per avvisare l'utente
         # invece di lasciarlo aspettare un OTP che non arriverà mai.
         self.otp_invio_confermato: bool | None = None
+
+    @property
+    def _origine(self) -> str:
+        return f"https://{self._host}"
+
+    def _su_host(self, url: str) -> str:
+        """Riscrive sull'host attivo gli URL assoluti che il server genera
+        puntando all'altro dei due host della stessa org Salesforce.
+
+        Salesforce conosce il proprio dominio pubblico e lo usa negli URL
+        assoluti che produce (returnValue di loginUser con frontdoor.jsp,
+        window.location della pagina-ponte, meta Location, action dei form):
+        seguirli così come sono, mentre si lavora sul dominio diretto,
+        riporterebbe dentro la verifica antibot. La riscrittura vale in
+        ENTRAMBE le direzioni: se l'host attivo è il primario e il server
+        genera un URL su *.my.site.com, anch'esso viene riportato sul
+        primario. URL relativi o su host estranei passano invariati.
+        """
+        for host in SF_HOSTS:
+            prefisso = f"https://{host}"
+            if url.startswith(prefisso):
+                return self._origine + url[len(prefisso) :]
+        return url
 
     # -- Passo 1-4: login + OTP -------------------------------------------
 
@@ -381,9 +418,44 @@ class AuthClient:
         """Sottomette email/password e arriva alla pagina OTP pronta per la
         convalida. Alza un'eccezione se le credenziali vengono rifiutate.
 
-        Assume sempre che segua un passo OTP, coerente con ogni cattura vista
-        finora.
+        Prova prima l'host primario; se Imperva risponde con la pagina
+        antibot riparte da capo sull'host diretto, e AccessoBloccato arriva
+        al chiamante solo se bloccati entrambi. Assume sempre che segua un
+        passo OTP, coerente con ogni cattura vista finora.
         """
+        await self._con_fallback_host(
+            lambda: self._async_begin_login_su_host(email, password), "Login"
+        )
+
+    async def _con_fallback_host(self, tentativo, operazione: str):
+        """Esegue un'operazione di rete partendo SEMPRE dall'host primario;
+        se Imperva risponde con la pagina antibot ripete sull'host diretto.
+
+        AccessoBloccato arriva al chiamante solo se sono bloccati entrambi.
+        Siccome ogni operazione riparte dal primario, l'integrazione torna
+        da sola al dominio ufficiale quando Enel toglie il blocco.
+        """
+        self._host = SF_HOST_PRINCIPALE
+        try:
+            return await tentativo()
+        except AccessoBloccato:
+            if self._host == SF_HOST_DIRETTO:
+                raise
+            _LOGGER.warning(
+                "%s bloccato dall'antibot su %s: riprovo dall'host diretto %s",
+                operazione,
+                self._host,
+                SF_HOST_DIRETTO,
+            )
+            self._host = SF_HOST_DIRETTO
+            return await tentativo()
+
+    async def _async_begin_login_su_host(self, email: str, password: str) -> None:
+        """Un tentativo completo di login sull'host attivo: i token di flow
+        e l'esito dell'invio OTP del tentativo precedente vanno azzerati,
+        perché appartenevano a una sessione diversa."""
+        self._flow = _LoginFlowState()
+        self.otp_invio_confermato = None
         login_page_html, start_url_value, aura_page_uri, referer = (
             await self._carica_pagina_login(email)
         )
@@ -420,7 +492,11 @@ class AuthClient:
         }
 
         resp = await _get_following_redirects(
-            self._session, OAUTH_AUTHORIZE_URL, params=params, headers=headers
+            self._session,
+            self._su_host(OAUTH_AUTHORIZE_URL),
+            params=params,
+            headers=headers,
+            riscrivi=self._su_host,
         )
         login_page_html = await _leggi_testo(resp)
         # Il parametro 'startURL' della pagina su cui atterriamo contiene un
@@ -506,12 +582,12 @@ class AuthClient:
             **headers,
             "X-SFDC-Page-Scope-Id": str(uuid.uuid4()),
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-            "Origin": SF_ORIGIN,
+            "Origin": self._origine,
             "Referer": referer,
         }
 
         async with self._session.post(
-            f"{AURA_ENDPOINT}?r=2&other.PED_Login.loginUser=1",
+            f"{self._su_host(AURA_ENDPOINT)}?r=2&other.PED_Login.loginUser=1",
             data=data,
             headers=login_headers,
         ) as resp:
@@ -546,8 +622,8 @@ class AuthClient:
         # Seguirlo stabilisce il cookie di sessione 'sid' e atterra su una
         # pagina-ponte che fa un redirect via JAVASCRIPT (non HTTP) verso il
         # vero form OTP - vedi _segui_a_pagina_otp. L'URL arriva col dominio
-        # pubblico dietro Imperva: si riscrive sull'host diretto.
-        return _url_via_host_diretto(return_value[len("OK:") :])
+        # pubblico dietro Imperva: si riscrive sull'host attivo.
+        return self._su_host(return_value[len("OK:") :])
 
     async def _segui_a_pagina_otp(self, frontdoor_url: str) -> str:
         """Passo 3: frontdoor.jsp stabilisce il cookie di sessione 'sid' e
@@ -558,12 +634,16 @@ class AuthClient:
         """
         headers = {"User-Agent": _MOBILE_USER_AGENT}
 
-        resp = await _get_following_redirects(self._session, frontdoor_url, headers=headers)
+        resp = await _get_following_redirects(
+            self._session, frontdoor_url, headers=headers, riscrivi=self._su_host
+        )
         bridge_html = await _leggi_testo(resp)
         resp.close()
 
-        otp_form_url = _url_via_host_diretto(self._estrai_url_redirect_js(bridge_html))
-        resp = await _get_following_redirects(self._session, otp_form_url, headers=headers)
+        otp_form_url = self._su_host(self._estrai_url_redirect_js(bridge_html))
+        resp = await _get_following_redirects(
+            self._session, otp_form_url, headers=headers, riscrivi=self._su_host
+        )
         otp_page_html = await _leggi_testo(resp)
         resp.close()
         # Password scaduta: al posto del form OTP arriva direttamente il
@@ -644,7 +724,7 @@ class AuthClient:
         pagina di atterraggio: ruotano ad ogni submit del form.
         """
         headers = {"User-Agent": _MOBILE_USER_AGENT, "Faces-Request": "partial/ajax"}
-        url = self._flow.form_action_url or LOGINFLOW_URL
+        url = self._su_host(self._flow.form_action_url or LOGINFLOW_URL)
         async with self._session.post(url, data=data, headers=headers) as resp:
             body = await _leggi_testo(resp)
 
@@ -687,7 +767,7 @@ class AuthClient:
         headers = {"User-Agent": _MOBILE_USER_AGENT, "Faces-Request": "partial/ajax"}
         data = self._form_convalida(otp_code)
 
-        url = self._flow.form_action_url or LOGINFLOW_URL
+        url = self._su_host(self._flow.form_action_url or LOGINFLOW_URL)
         async with self._session.post(url, data=data, headers=headers) as resp:
             body = await _leggi_testo(resp)
 
@@ -708,8 +788,8 @@ class AuthClient:
             )
         next_url = unquote(loc_match.group(1))
         if next_url.startswith("/"):
-            next_url = SF_ORIGIN + next_url
-        return _url_via_host_diretto(next_url)
+            next_url = self._origine + next_url
+        return self._su_host(next_url)
 
     async def _scarica_pagina_dopo_otp(self, next_url: str) -> str:
         """Passo 6: GET della pagina a cui punta il redirect - di norma
@@ -791,8 +871,8 @@ class AuthClient:
         headers = {
             "User-Agent": _MOBILE_USER_AGENT,
             "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": SF_ORIGIN,
-            "Referer": f"{SF_BASE}/",
+            "Origin": self._origine,
+            "Referer": f"{self._origine}/PortaleClienti/",
         }
         # allow_redirects=False: il redirect punta allo schema custom
         # dell'app (eneldist://), che aiohttp non sa seguire - il codice sta
@@ -804,8 +884,7 @@ class AuthClient:
             body = await _leggi_testo(resp)
         return location or body
 
-    @staticmethod
-    def _estrai_form_consenso(html: str) -> tuple[str, dict[str, str]] | None:
+    def _estrai_form_consenso(self, html: str) -> tuple[str, dict[str, str]] | None:
         """Trova il form della schermata di consenso e costruisce il
         payload da rimandare: tutti i campi hidden così come sono, più il
         pulsante di approvazione.
@@ -852,8 +931,8 @@ class AuthClient:
             if not action_url:
                 return None
             if action_url.startswith("/"):
-                action_url = SF_ORIGIN + action_url
-            return _url_via_host_diretto(action_url), dati
+                action_url = self._origine + action_url
+            return self._su_host(action_url), dati
 
         return None
 
@@ -881,19 +960,33 @@ class AuthClient:
             "client_id": OAUTH_CLIENT_ID,
             "grant_type": "authorization_code",
         }
-        async with self._session.post(OAUTH_TOKEN_URL, data=data) as resp:
+        async with self._session.post(self._su_host(OAUTH_TOKEN_URL), data=data) as resp:
             payload = self._json_token(await _leggi_testo(resp), resp.status)
         return self._tokens_from_payload(payload)
 
     async def async_refresh_access_token(self, refresh_token: str) -> OAuthTokens:
         """Ottiene un access_token fresco. Nessun Aura/OTP coinvolto - è il
-        percorso che l'integrazione usa a ogni avvio/rinnovo normale."""
+        percorso che l'integrazione usa a ogni avvio/rinnovo normale.
+
+        Come il login: si parte sempre dall'host primario e si ripiega sul
+        diretto solo se Imperva risponde con la pagina antibot, così quando
+        il blocco viene tolto si torna da soli al dominio ufficiale.
+        AccessoBloccato arriva al chiamante solo se bloccati entrambi.
+        """
+        return await self._con_fallback_host(
+            lambda: self._async_refresh_su_host(refresh_token), "Refresh del token"
+        )
+
+    async def _async_refresh_su_host(self, refresh_token: str) -> OAuthTokens:
+        """Un tentativo di refresh sull'host attivo."""
         data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": OAUTH_CLIENT_ID,
         }
-        async with self._session.post(OAUTH_TOKEN_URL, data=data) as resp:
+        async with self._session.post(
+            self._su_host(OAUTH_TOKEN_URL), data=data
+        ) as resp:
             text = await _leggi_testo(resp)
             if resp.status != 200:
                 raise AuthError(f"Scambio del refresh_token fallito ({resp.status}): {text[:300]}")
@@ -926,6 +1019,172 @@ class AuthClient:
             )
         except KeyError as err:
             raise ParsingError(f"Campo atteso mancante nella risposta del token endpoint: {err}") from err
+
+    # -- Sessione web Aura (tabelle del portale: Misure GSE-TERNA) ----------
+    # Le misure ufficiali trasmesse a GSE/Terna non passano dalle API
+    # xs-misura ma dalle chiamate Aura della pagina /s/gse-terna, dentro la
+    # sessione web aperta da frontdoor.jsp con l'access_token come sid.
+    # Pipeline verificata su cattura mitmproxy:
+    #   frontdoor.jsp?sid=<access_token>   -> cookie sid
+    #   GET /s/gse-terna                   -> auraConfig (fwuid, cookie CSRF)
+    #   POST aura callSuppliesByPodId      -> seleziona il POD in sessione
+    #   POST aura QueryRegulatoryComplianceStatusService -> righe del mese
+
+    async def async_get_misure_gse_terna(
+        self, access_token: str, pod: str, yearmonth: str
+    ) -> list[dict]:
+        """Righe della tabella 'Misure GSE-TERNA' del portale per POD e mese.
+
+        'yearmonth' nel formato 'YYYY-MM'. Ogni riga è il record grezzo
+        restituito dall'azione Aura (energia prodotta/prelevata/immessa per
+        fascia F1-F3 + totale, tipo incentivo, nome file, data di
+        trasmissione, stato); la normalizzazione è a carico del chiamante.
+
+        Va chiamato sul POD DI SCAMBIO: per un POD di produzione ITP... la
+        query torna vuota - le sue misure sono aggregate sullo scambio
+        collegato (campo POD_Scambio di callSuppliesByPodId).
+        """
+        return await self._con_fallback_host(
+            lambda: self._async_misure_gse_terna(access_token, pod, yearmonth),
+            "Lettura delle misure GSE-TERNA",
+        )
+
+    async def _async_misure_gse_terna(
+        self, access_token: str, pod: str, yearmonth: str
+    ) -> list[dict]:
+        """Un tentativo sull'host attivo; la sessione web viene riaperta una
+        seconda volta se il token CSRF risulta scaduto."""
+        await self._apri_sessione_web(access_token)
+        for tentativo in (1, 2):
+            try:
+                # Il POD non è un parametro della query: va selezionato
+                # nello stato della sessione Salesforce.
+                await self._aura_action(
+                    "apex://PED_InfoAndData/ACTION$callSuppliesByPodId",
+                    {"pod": pod, "fromDelegate": False},
+                    "markup://c:PED_POD_Details",
+                )
+                return await self._aura_action(
+                    "apex://PED_ServizidiMisuraController/"
+                    "ACTION$QueryRegulatoryComplianceStatusService",
+                    {"YearMonth": yearmonth, "Incentive": "", "isDelegate": False},
+                    "markup://c:PED_Terna_GSE",
+                )
+            except AuraSessionScaduta:
+                if tentativo == 2:
+                    raise
+                await self._apri_sessione_web(access_token)
+        raise AssertionError("non raggiungibile")
+
+    async def _apri_sessione_web(self, access_token: str) -> None:
+        """Converte l'access_token in sessione web (cookie sid) via
+        frontdoor.jsp e legge dalla pagina gse-terna la configurazione Aura
+        (fwuid, loaded, nome del cookie CSRF). Può essere rilanciata per
+        rinnovarla."""
+        async with self._session.get(
+            self._su_host(SF_FRONTDOOR_URL),
+            params={"sid": access_token, "retURL": "/PortaleClienti/s/"},
+            headers={"User-Agent": _BROWSER_USER_AGENT},
+        ) as resp:
+            await _leggi_testo(resp)
+            resp.raise_for_status()
+        async with self._session.get(
+            self._su_host(GSE_TERNA_PAGE_URL),
+            headers={"User-Agent": _BROWSER_USER_AGENT},
+        ) as resp:
+            html = await _leggi_testo(resp)
+            resp.raise_for_status()
+        self._aura_context, nome_cookie = self._estrai_aura_config(html)
+        self._aura_token = self._aura_cookie_token(nome_cookie)
+
+    @staticmethod
+    def _estrai_aura_config(html: str) -> tuple[str, str]:
+        """(aura.context serializzato, nome del cookie CSRF) dalla pagina.
+
+        auraConfig.eikoocnekot ('tokenCookie' al contrario) è il NOME del
+        cookie che contiene il token CSRF: il valore da passare come
+        aura.token va letto dal cookie jar della sessione.
+        """
+        match = re.search(r"var\s+auraConfig\s*=\s*(\{)", html)
+        if not match:
+            raise ParsingError("auraConfig non trovato nella pagina gse-terna")
+        try:
+            # raw_decode si ferma al primo oggetto: sulla stessa riga può
+            # seguire altro JavaScript.
+            cfg, _ = json.JSONDecoder().raw_decode(html, match.end(1) - 1)
+            ctx = cfg["context"]
+            context = json.dumps(
+                {
+                    "mode": "PROD",
+                    "fwuid": ctx["fwuid"],
+                    "app": "siteforce:communityApp",
+                    "loaded": ctx["loaded"],
+                    "dn": [],
+                    "globals": {},
+                    "uad": True,
+                }
+            )
+            nome_cookie = cfg["eikoocnekot"] or cfg["token"]
+        except (json.JSONDecodeError, KeyError, TypeError) as err:
+            raise ParsingError(f"auraConfig irriconoscibile: {err}") from err
+        return context, nome_cookie
+
+    def _aura_cookie_token(self, nome_cookie: str) -> str:
+        """Valore del cookie CSRF il cui nome è indicato da auraConfig."""
+        for cookie in self._session.cookie_jar:
+            if cookie.key == nome_cookie:
+                return cookie.value
+        raise ParsingError(
+            f"Cookie CSRF Aura '{nome_cookie}' assente dalla sessione"
+        )
+
+    async def _aura_action(self, descriptor: str, params: dict, caller: str) -> list:
+        """POST di una singola azione Aura; ritorna il returnValue."""
+        message = json.dumps(
+            {
+                "actions": [
+                    {
+                        "id": "1;a",
+                        "descriptor": descriptor,
+                        "callingDescriptor": caller,
+                        "params": params,
+                        "longRunning": True,
+                    }
+                ]
+            }
+        )
+        data = {
+            "message": message,
+            "aura.context": self._aura_context or "",
+            "aura.pageURI": "/s/gse-terna",
+            "aura.token": self._aura_token or "",
+        }
+        headers = {
+            "User-Agent": _BROWSER_USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": self._origine,
+            "Referer": self._su_host(GSE_TERNA_PAGE_URL),
+        }
+        async with self._session.post(
+            self._su_host(AURA_ENDPOINT), data=data, headers=headers
+        ) as resp:
+            testo = await _leggi_testo(resp)
+            resp.raise_for_status()
+        if "invalidSession" in testo or "invalid_csrf" in testo:
+            raise AuraSessionScaduta(
+                "Sessione web Aura scaduta o token CSRF invalido"
+            )
+        try:
+            azione = json.loads(testo)["actions"][0]
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as err:
+            raise ParsingError(
+                f"Risposta Aura non riconosciuta: {testo[:200]!r}"
+            ) from err
+        if azione.get("state") != "SUCCESS":
+            raise ParsingError(
+                f"Azione Aura {descriptor} fallita: stato {azione.get('state')!r}"
+            )
+        return azione.get("returnValue") or []
 
     # -- Scraping HTML/JSON --------------------------------------------------
     # Le parti più probabilmente da correggere contro una HAR fresca.
@@ -1066,6 +1325,6 @@ class AuthClient:
         form_action = re.search(r'<form[^>]+action="([^"]+)"', html)
         if form_action:
             action = form_action.group(1)
-            self._flow.form_action_url = _url_via_host_diretto(
-                action if action.startswith("http") else f"{SF_ORIGIN}{action}"
+            self._flow.form_action_url = self._su_host(
+                action if action.startswith("http") else f"{self._origine}{action}"
             )

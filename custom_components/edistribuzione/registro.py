@@ -85,10 +85,51 @@ def righe_letture(letture: list[dict]) -> list[dict]:
     return righe
 
 
+def fasce_mensili(time_of_use: list[dict], anno: int, mese: int) -> dict | None:
+    """Energia mensile per fascia da una risposta querymonthlytimeofuse.
+
+    La risposta può coprire più mesi (yearMonth 'YYYYMM'): si estrae solo la
+    riga del mese richiesto. Verificato su dati reali che energyT4 è il
+    totale (T1+T2+T3), non una quarta fascia: le fasce F1-F3 del registro
+    corrispondono a T1-T3.
+    """
+    chiave = f"{anno:04d}{mese:02d}"
+    for elemento in time_of_use or []:
+        if elemento.get("yearMonth") != chiave:
+            continue
+        lett = elemento.get("readings") or {}
+        try:
+            return {
+                "f1": float(lett["energyT1"]),
+                "f2": float(lett["energyT2"]),
+                "f3": float(lett["energyT3"]),
+                "totale": float(lett["energyT4"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
 def payload_registro(
-    pod: str, tipo_pod: str, anno: int, mese: int, letture: list[dict]
+    pod: str,
+    tipo_pod: str,
+    anno: int,
+    mese: int,
+    letture: list[dict],
+    misure_gse_terna: list[dict] | None = None,
+    fasce: dict | None = None,
 ) -> dict:
-    """Payload JSON inviato al webhook per un POD e un mese."""
+    """Payload JSON inviato al webhook per un POD e un mese.
+
+    'misure_gse_terna' sono le righe grezze della tabella 'Misure GSE-TERNA'
+    del portale (categorie UPN/SSP_MIS/D540): energia prodotta, immessa e
+    prelevata per fascia F1-F3 + totale, nome del file ufficiale, data di
+    trasmissione e stato della misura.
+
+    'fasce' è la vista normalizzata delle energie mensili per fascia
+    (querymonthlytimeofuse A1/A2), nella forma
+    {"immessa": {"f1","f2","f3","totale"}, "prelevata": {...}}.
+    """
     primo, ultimo = periodo_mese(anno, mese)
     lettura_da, lettura_a = finestra_lettura_fine_mese(anno, mese)
     return {
@@ -104,6 +145,8 @@ def payload_registro(
         "lettura_fine_mese_a": lettura_a.isoformat(),
         "letture": letture,
         "righe": righe_letture(letture),
+        "misure_gse_terna": misure_gse_terna or [],
+        "fasce": fasce or {},
     }
 
 

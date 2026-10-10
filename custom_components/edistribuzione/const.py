@@ -12,19 +12,26 @@ DOMAIN = "edistribuzione"
 # - private.e-distribuzione.it e' il dominio "custom" del portale, davanti a
 #   cui Enel ha messo Imperva (Incapsula): da ottobre 2026 risponde a
 #   qualunque client non-browser con la verifica antibot "Pardon Our
-#   Interruption", bloccando sia il login sia il refresh del token. Gli URL
-#   che il server genera (frontdoor.jsp, redirect JS, action dei form)
-#   puntano comunque a questo dominio: auth.py li riscrive su SF_HOST prima
-#   di seguirli, altrimenti si ricadrebbe nella verifica.
+#   Interruption", bloccando sia il login sia il refresh del token.
 # - edistribuzione.my.site.com e' il dominio canonico assegnato da Salesforce
 #   all'org: stessa pagina di login (fwuid/PED_Login/loginApp2 identici),
 #   stesso client_id OAuth, ma servito dalla CDN di Salesforce senza Imperva
 #   in mezzo. Verificato il 10/10/2026: authorize -> 302 sulla login page,
 #   loginUser -> "KO: Username non valido" con credenziali inventate, token
 #   endpoint -> validazione JSON reale dei parametri.
-SF_HOST = "edistribuzione.my.site.com"
-SF_HOST_BLOCCATO = "private.e-distribuzione.it"
-SF_ORIGIN = f"https://{SF_HOST}"
+#
+# Strategia adottata (allineata a quanto fatto upstream): si prova SEMPRE
+# prima l'host primario e si ripiega su quello diretto solo se il primario
+# risponde con la pagina antibot - cosi' quando Enel togliera' il blocco
+# l'integrazione torna da sola al dominio ufficiale. Gli URL assoluti che il
+# server genera (frontdoor.jsp, redirect JS, action dei form) possono
+# puntare all'altro dominio: auth.py li riscrive sull'host attivo prima di
+# seguirli. AccessoBloccato arriva al chiamante solo se sono bloccati
+# entrambi gli host.
+SF_HOST_PRINCIPALE = "private.e-distribuzione.it"
+SF_HOST_DIRETTO = "edistribuzione.my.site.com"
+SF_HOSTS = (SF_HOST_PRINCIPALE, SF_HOST_DIRETTO)
+SF_ORIGIN = f"https://{SF_HOST_PRINCIPALE}"
 SF_BASE = f"{SF_ORIGIN}/PortaleClienti"
 
 OAUTH_AUTHORIZE_URL = f"{SF_BASE}/services/oauth2/authorize"
@@ -34,6 +41,10 @@ OAUTH_USERINFO_URL = f"{SF_BASE}/services/oauth2/userinfo"
 LOGIN_PAGE_URL = f"{SF_BASE}/s/login/"
 AURA_ENDPOINT = f"{SF_BASE}/s/sfsites/aura"
 LOGINFLOW_URL = f"{SF_BASE}/loginflow/loginFlow.apexp"
+# Sessione web Aura: frontdoor.jsp converte l'access_token OAuth nel cookie
+# sid; la pagina GSE-TERNA espone la configurazione Aura (fwuid, cookie CSRF).
+SF_FRONTDOOR_URL = f"{SF_BASE}/secur/frontdoor.jsp"
+GSE_TERNA_PAGE_URL = f"{SF_BASE}/s/gse-terna"
 
 # Client ID dell'app ufficiale E-Distribuzione (pubblico, stile app nativa -
 # nessun client_secret, coerente con PKCE). Riusare il client_id di Enel è

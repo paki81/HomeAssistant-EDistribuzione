@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
 
+import aiohttp
 import pytest
 
 PKG_DIR = Path(__file__).parent.parent / "custom_components" / "edistribuzione"
@@ -251,11 +253,19 @@ class TestCostruttoriFormOtp:
 
 
 class _RispostaFinta:
+    status = 200
+
     def __init__(self, body: str) -> None:
         self._body = body
 
     async def text(self) -> str:
         return self._body
+
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(
+                request_info=None, history=(), status=self.status
+            )
 
     async def __aenter__(self):
         return self
@@ -380,7 +390,9 @@ class TestFormConsenso:
     def test_seleziona_consenti_e_non_nega(self):
         """I due pulsanti hanno lo stesso name: prendere quello sbagliato
         significherebbe NEGARE l'autorizzazione all'integrazione."""
-        action, dati = auth.AuthClient._estrai_form_consenso(HTML_PAGINA_CONSENSO)
+        action, dati = _client_su_host("edistribuzione.my.site.com")._estrai_form_consenso(
+            HTML_PAGINA_CONSENSO
+        )
         assert dati["save"] == "Consenti"
         assert action == (
             "https://edistribuzione.my.site.com/PortaleClienti/_ui/identity/oauth/ui/AuthorizationPage"
@@ -390,7 +402,9 @@ class TestFormConsenso:
         """save_new_url e source sono URL pieni di parametri: se restano
         escapati (&amp;) il server riceve valori diversi da quelli che ha
         generato."""
-        _, dati = auth.AuthClient._estrai_form_consenso(HTML_PAGINA_CONSENSO)
+        _, dati = _client_su_host("edistribuzione.my.site.com")._estrai_form_consenso(
+            HTML_PAGINA_CONSENSO
+        )
         assert set(dati) == {
             "_CONFIRMATIONTOKEN",
             "cancelURL",
@@ -408,7 +422,7 @@ class TestFormConsenso:
         """Su una pagina che non è una schermata di consenso il chiamante
         deve poter proseguire col suo errore di parsing abituale."""
         assert (
-            auth.AuthClient._estrai_form_consenso(
+            _client_su_host("edistribuzione.my.site.com")._estrai_form_consenso(
                 "<html><body><form><input type='submit' name='x' value='Invia'>"
                 "</form></body></html>"
             )
@@ -429,6 +443,9 @@ class _SessioneACoda:
     def __init__(self, risposte: list) -> None:
         self._risposte = list(risposte)
         self.post_inviati: list[dict] = []
+        # Imita il cookie jar di aiohttp: iterabile di oggetti con
+        # attributi .key/.value (Morsel).
+        self.cookie_jar: list = []
 
     def _prossima(self):
         return self._risposte.pop(0)
@@ -437,7 +454,7 @@ class _SessioneACoda:
         self.post_inviati.append({"url": url, "data": data})
         return self._prossima()
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, params=None):
         return self._prossima()
 
 
@@ -489,30 +506,51 @@ class TestVerificaNonTroppeSessioni:
 
 
 # ---------------------------------------------------------------------------
-# _url_via_host_diretto: gli URL che il server genera puntando al dominio
-# custom dietro Imperva vengono riscritti sul dominio *.my.site.com
+# _su_host: gli URL assoluti che il server genera sull'ALTRO host della
+# stessa org Salesforce vengono riscritti sull'host attivo del client
+# (in entrambe le direzioni), altrimenti seguirli ricadrebbe nella
+# verifica antibot di Imperva.
 # ---------------------------------------------------------------------------
 
 
-class TestUrlViaHostDiretto:
-    def test_riscrive_il_dominio_protetto(self):
-        """Seguire un URL su private.e-distribuzione.it riporterebbe dentro
-        la verifica antibot "Pardon Our Interruption"."""
-        assert auth._url_via_host_diretto(
+def _client_su_host(host: str):
+    client = auth.AuthClient(None)
+    client._host = host
+    return client
+
+
+class TestSuHost:
+    def test_riscrive_il_dominio_protetto_sul_diretto(self):
+        """Con l'host diretto attivo, seguire un URL su
+        private.e-distribuzione.it riporterebbe dentro la verifica antibot
+        "Pardon Our Interruption"."""
+        client = _client_su_host("edistribuzione.my.site.com")
+        assert client._su_host(
             "https://private.e-distribuzione.it/PortaleClienti/secur/frontdoor.jsp?retURL=x"
         ) == "https://edistribuzione.my.site.com/PortaleClienti/secur/frontdoor.jsp?retURL=x"
 
-    def test_lascia_invariato_l_host_diretto(self):
+    def test_riscrive_il_diretto_sul_primario(self):
+        """La riscrittura vale anche in senso inverso: con il primario
+        attivo, un URL generato dal server su *.my.site.com va riportato
+        sul dominio ufficiale."""
+        client = _client_su_host("private.e-distribuzione.it")
+        assert client._su_host(
+            "https://edistribuzione.my.site.com/PortaleClienti/loginflow/loginFlow.apexp"
+        ) == "https://private.e-distribuzione.it/PortaleClienti/loginflow/loginFlow.apexp"
+
+    def test_lascia_invariato_l_url_gia_sull_host_attivo(self):
+        client = _client_su_host("edistribuzione.my.site.com")
         url = "https://edistribuzione.my.site.com/PortaleClienti/loginflow/loginFlow.apexp"
-        assert auth._url_via_host_diretto(url) == url
+        assert client._su_host(url) == url
 
     def test_lascia_invariati_altri_host_e_relativi(self):
-        """Solo l'esatto dominio protetto va riscritto: un hostname diverso
-        (anche dello stesso sito) passa com'è, e un path relativo resta
-        relativo per il join del chiamante."""
-        assert auth._url_via_host_diretto("https://example.com/x") == "https://example.com/x"
+        """Solo i due host della stessa org vanno riscritti: un hostname
+        diverso passa com'è, e un path relativo resta relativo per il join
+        del chiamante."""
+        client = _client_su_host("private.e-distribuzione.it")
+        assert client._su_host("https://example.com/x") == "https://example.com/x"
         assert (
-            auth._url_via_host_diretto("/PortaleClienti/loginflow/loginFlow.apexp")
+            client._su_host("/PortaleClienti/loginflow/loginFlow.apexp")
             == "/PortaleClienti/loginflow/loginFlow.apexp"
         )
 
@@ -575,10 +613,34 @@ class TestAccessoBloccato:
     def test_e_un_auth_error(self):
         assert issubclass(auth.AccessoBloccato, auth.AuthError)
 
-    async def test_refresh_del_token_bloccato(self):
-        session = _SessioneACoda([_RispostaToken(PAGINA_ANTIBOT)])
+    async def test_refresh_del_token_bloccato_su_entrambi_gli_host(self):
+        """AccessoBloccato arriva al chiamante solo quando anche il ripiego
+        sull'host diretto trova la pagina antibot."""
+        session = _SessioneACoda([_RispostaToken(PAGINA_ANTIBOT), _RispostaToken(PAGINA_ANTIBOT)])
         with pytest.raises(auth.AccessoBloccato):
             await auth.AuthClient(session).async_refresh_access_token("rt")
+
+    async def test_refresh_ripiega_sul_host_diretto_se_il_primario_e_bloccato(self):
+        """Primario dietro antibot: il refresh ripete sulla stessa org al
+        dominio diretto e riesce. Le due richieste devono andare su host
+        diversi."""
+        session = _SessioneACoda([
+            _RispostaToken(PAGINA_ANTIBOT),
+            _RispostaToken('{"access_token": "nuovo"}'),
+        ])
+        tokens = await auth.AuthClient(session).async_refresh_access_token("rt")
+        assert tokens.access_token == "nuovo"
+        assert "private.e-distribuzione.it" in session.post_inviati[0]["url"]
+        assert "edistribuzione.my.site.com" in session.post_inviati[1]["url"]
+
+    async def test_refresh_usa_il_primario_senza_ripieghi(self):
+        """In condizioni normali una sola richiesta, sul dominio ufficiale:
+        il ripiego non deve lasciare il client ancorato all'host diretto."""
+        session = _SessioneACoda([_RispostaToken('{"access_token": "nuovo"}')])
+        tokens = await auth.AuthClient(session).async_refresh_access_token("rt")
+        assert tokens.access_token == "nuovo"
+        assert len(session.post_inviati) == 1
+        assert "private.e-distribuzione.it" in session.post_inviati[0]["url"]
 
     async def test_refresh_con_una_pagina_html_qualunque_e_un_parsing_error(self):
         session = _SessioneACoda([_RispostaToken("<html>manutenzione</html>")])
@@ -632,3 +694,170 @@ class TestPasswordScaduta:
         client, _ = _client_su_form_otp(PAGINA_CAMBIO_PASSWORD)
         with pytest.raises(auth.PasswordScaduta):
             await client._async_avvia_invio_otp()
+
+
+# ---------------------------------------------------------------------------
+# Sessione web Aura: tabella 'Misure GSE-TERNA' del portale. Struttura delle
+# chiamate verificata su cattura mitmproxy del portale reale.
+# ---------------------------------------------------------------------------
+
+AURA_CONFIG_HTML = (
+    '<html><head><script>var auraConfig = {'
+    '"context":{"fwuid":"FW_TEST",'
+    '"loaded":{"APPLICATION@markup://siteforce:communityApp":"x"}},'
+    '"contextPath":"/PortaleClienti/s/sfsites",'
+    '"eikoocnekot":"__Host-CSRF_TEST"'
+    "};</script></head><body>pagina</body></html>"
+)
+
+
+class _CookieFinto:
+    """Morsel minimo: l'attributo usato da _aura_cookie_token è .key/.value."""
+
+    def __init__(self, key: str, value: str) -> None:
+        self.key = key
+        self.value = value
+
+
+def _risposta_aura(return_value) -> _RispostaFinta:
+    return _RispostaFinta(
+        json.dumps(
+            {"actions": [{"id": "1;a", "state": "SUCCESS", "returnValue": return_value}]}
+        )
+    )
+
+
+RIGA_D540 = {
+    "producedEnergyF1": 4943.045,
+    "producedEnergyF2": 1196.09,
+    "producedEnergyF3": 951.067,
+    "producedEnergyTot": 7090.202,
+    "inputEnergyTot": None,
+    "intakeEnergyTot": None,
+    "incentiveType": "22",
+    "yearMonth": "2026-07",
+    "fileName": "D540_001_2026_07_20260813_152428_M_6323.json",
+    "dispatchedDate": "2026-08-13T13:24:28.000Z",
+    "measureState": "Inviata",
+}
+
+
+def _sessione_gse(righe) -> _SessioneACoda:
+    """frontdoor OK, pagina con auraConfig, poi le due azioni Aura."""
+    session = _SessioneACoda(
+        [
+            _RispostaFinta("<html>frontdoor</html>"),
+            _RispostaFinta(AURA_CONFIG_HTML),
+            _risposta_aura({"data": [{"pods": []}]}),  # callSuppliesByPodId
+            _risposta_aura(righe),  # QueryRegulatoryComplianceStatusService
+        ]
+    )
+    session.cookie_jar = [_CookieFinto("__Host-CSRF_TEST", "TOKEN_CSRF_TEST")]
+    return session
+
+
+class TestEstraiAuraConfig:
+    def test_estrae_context_e_nome_cookie(self):
+        context, nome_cookie = auth.AuthClient._estrai_aura_config(AURA_CONFIG_HTML)
+        assert '"fwuid":"FW_TEST"' in context or '"fwuid": "FW_TEST"' in context
+        assert nome_cookie == "__Host-CSRF_TEST"
+
+    def test_senza_aura_config_solleva_parsing(self):
+        with pytest.raises(auth.ParsingError):
+            auth.AuthClient._estrai_aura_config("<html>nessuna config</html>")
+
+
+class TestAuraCookieToken:
+    def test_legge_il_valore_del_cookie(self):
+        session = _SessioneACoda([])
+        session.cookie_jar = [
+            _CookieFinto("sid", "x"),
+            _CookieFinto("__Host-CSRF_TEST", "TOKEN_CSRF_TEST"),
+        ]
+        client = auth.AuthClient(session)
+        assert client._aura_cookie_token("__Host-CSRF_TEST") == "TOKEN_CSRF_TEST"
+
+    def test_cookie_assente_solleva_parsing(self):
+        client = auth.AuthClient(_SessioneACoda([]))
+        with pytest.raises(auth.ParsingError):
+            client._aura_cookie_token("__Host-CSRF_TEST")
+
+
+class TestMisureGseTerna:
+    async def test_pipeline_completa_restituisce_le_righe(self):
+        session = _sessione_gse([RIGA_D540])
+        client = auth.AuthClient(session)
+        righe = await client.async_get_misure_gse_terna(
+            "ACCESS_TOKEN", "IT001E04193830", "2026-07"
+        )
+        assert righe == [RIGA_D540]
+
+    async def test_seleziona_il_pod_e_interroga_il_mese(self):
+        session = _sessione_gse([RIGA_D540])
+        client = auth.AuthClient(session)
+        await client.async_get_misure_gse_terna("ACCESS_TOKEN", "IT001E04193830", "2026-07")
+        messaggi = [
+            json.loads(post["data"]["message"]) for post in session.post_inviati
+        ]
+        assert "callSuppliesByPodId" in messaggi[0]["actions"][0]["descriptor"]
+        assert messaggi[0]["actions"][0]["params"]["pod"] == "IT001E04193830"
+        assert "QueryRegulatoryComplianceStatusService" in messaggi[1]["actions"][0][
+            "descriptor"
+        ]
+        assert messaggi[1]["actions"][0]["params"]["YearMonth"] == "2026-07"
+
+    async def test_aura_token_e_il_valore_del_cookie_csrf(self):
+        session = _sessione_gse([])
+        client = auth.AuthClient(session)
+        await client.async_get_misure_gse_terna("ACCESS_TOKEN", "IT001E04193830", "2026-07")
+        for post in session.post_inviati:
+            assert post["data"]["aura.token"] == "TOKEN_CSRF_TEST"
+
+    async def test_risposta_vuota_restituisce_lista_vuota(self):
+        session = _sessione_gse([])
+        client = auth.AuthClient(session)
+        assert (
+            await client.async_get_misure_gse_terna(
+                "ACCESS_TOKEN", "ITP0AE04193830", "2026-07"
+            )
+            == []
+        )
+
+    async def test_sessione_aura_scaduta_riapre_e_riprova(self):
+        """Prima azione con invalidSession: la sessione web viene riaperta
+        (frontdoor + pagina) e le azioni ripetute."""
+        session = _SessioneACoda(
+            [
+                _RispostaFinta("<html>frontdoor</html>"),
+                _RispostaFinta(AURA_CONFIG_HTML),
+                _RispostaFinta('{"event":{"descriptor":"markup://aura:invalidSession"}}'),
+                # sessione riaperta
+                _RispostaFinta("<html>frontdoor</html>"),
+                _RispostaFinta(AURA_CONFIG_HTML),
+                _risposta_aura({}),
+                _risposta_aura([RIGA_D540]),
+            ]
+        )
+        session.cookie_jar = [_CookieFinto("__Host-CSRF_TEST", "TOKEN_CSRF_TEST")]
+        client = auth.AuthClient(session)
+        righe = await client.async_get_misure_gse_terna(
+            "ACCESS_TOKEN", "IT001E04193830", "2026-07"
+        )
+        assert righe == [RIGA_D540]
+
+    async def test_azione_fallita_solleva_parsing_error(self):
+        session = _SessioneACoda(
+            [
+                _RispostaFinta("<html>frontdoor</html>"),
+                _RispostaFinta(AURA_CONFIG_HTML),
+                _RispostaFinta(
+                    json.dumps({"actions": [{"id": "1;a", "state": "ERROR"}]})
+                ),
+            ]
+        )
+        session.cookie_jar = [_CookieFinto("__Host-CSRF_TEST", "T")]
+        client = auth.AuthClient(session)
+        with pytest.raises(auth.ParsingError):
+            await client.async_get_misure_gse_terna(
+                "ACCESS_TOKEN", "IT001E04193830", "2026-07"
+            )

@@ -29,3 +29,4 @@ refresh_token.txt
 # lo lancia da questa cartella durante un test manuale.
 edistribuzione_curve.db
 edistribuzione_curve.db-*
+probe_letture_debug.json

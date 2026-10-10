@@ -62,6 +62,7 @@ from .const import (
 from .registro import (
     RegistroError,
     async_invia_registro,
+    fasce_mensili,
     finestra_lettura_fine_mese,
     mese_precedente,
     payload_registro,
@@ -153,6 +154,9 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         self._session = session
         self._auth = AuthClient(session)
         self._api = ApiClient(session, access_token="")
+        # Ultimo access_token valido: serve anche alle chiamate del portale
+        # web (sessione Aura delle Misure GSE-TERNA) fatte tramite _auth.
+        self._access_token = ""
 
     def tipo_pod(self, pod: str) -> str:
         """Ruolo assegnato dall'utente al POD (scambio/produzione), dalle
@@ -212,6 +216,7 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         self.accesso_bloccato = False
         ir.async_delete_issue(self.hass, DOMAIN, ISSUE_ACCESSO_BLOCCATO)
         self._api.update_token(tokens.access_token)
+        self._access_token = tokens.access_token
 
         if tokens.refresh_token != refresh_token:
             new_data = dict(self.entry.data)
@@ -597,7 +602,53 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                 mese,
             )
             return False
-        payload = payload_registro(pod, self.tipo_pod(pod), anno, mese, letture)
+        primo, ultimo = periodo_mese(anno, mese)
+        # Le misure GSE-TERNA ufficiali (D540/UPN/SSP) e le energie mensili
+        # per fascia (time_of_use A1/A2) arricchiscono il payload: un loro
+        # fallimento non blocca l'export delle letture, che restano il dato
+        # minimo del registro.
+        misure_gse: list[dict] = []
+        fasce: dict = {}
+        try:
+            misure_gse = await self._auth.async_get_misure_gse_terna(
+                self._access_token, pod, f"{anno:04d}-{mese:02d}"
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "POD %s: misure GSE-TERNA di %04d-%02d non disponibili (%s)",
+                pod,
+                anno,
+                mese,
+                err,
+            )
+        try:
+            fasce = {
+                "immessa": fasce_mensili(
+                    await self._api.async_get_monthly_time_of_use(
+                        pod, primo, ultimo, MAGNITUDE_IMMESSA
+                    ),
+                    anno,
+                    mese,
+                ),
+                "prelevata": fasce_mensili(
+                    await self._api.async_get_monthly_time_of_use(
+                        pod, primo, ultimo, MAGNITUDE_PRELEVATA
+                    ),
+                    anno,
+                    mese,
+                ),
+            }
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "POD %s: fasce mensili di %04d-%02d non disponibili (%s)",
+                pod,
+                anno,
+                mese,
+                err,
+            )
+        payload = payload_registro(
+            pod, self.tipo_pod(pod), anno, mese, letture, misure_gse, fasce
+        )
         await async_invia_registro(self._session, url, segreto, payload)
         _LOGGER.info(
             "POD %s: letture ufficiali di %04d-%02d inviate al webhook (%d letture)",

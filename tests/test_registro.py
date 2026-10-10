@@ -132,6 +132,41 @@ class TestRigheLetture:
         assert registro.righe_letture([]) == []
 
 
+class TestFasceMensili:
+    TIME_OF_USE = [
+        {
+            "yearMonth": "202608",
+            "readings": {
+                "energyType": "A2",
+                "energyT1": "454.973",
+                "energyT2": "104.175",
+                "energyT3": "267.223",
+                "energyT4": "826.371",
+            },
+        },
+        {
+            "yearMonth": "202609",
+            "readings": {
+                "energyType": "A2",
+                "energyT1": "354.499",
+                "energyT2": "106.749",
+                "energyT3": "72.474",
+                "energyT4": "533.722",
+            },
+        },
+    ]
+
+    def test_estrae_il_mese_giusto_da_risposta_multi_mese(self):
+        fasce = registro.fasce_mensili(self.TIME_OF_USE, 2026, 9)
+        assert fasce == {"f1": 354.499, "f2": 106.749, "f3": 72.474, "totale": 533.722}
+
+    def test_mese_assente_ritorna_none(self):
+        assert registro.fasce_mensili(self.TIME_OF_USE, 2026, 7) is None
+
+    def test_lista_vuota_ritorna_none(self):
+        assert registro.fasce_mensili([], 2026, 9) is None
+
+
 class TestPayload:
     def test_struttura(self):
         payload = registro.payload_registro(POD_A, "produzione", 2026, 9, [LETTURA])
@@ -145,6 +180,16 @@ class TestPayload:
         assert payload["lettura_fine_mese_da"] == "2026-09-30"
         assert payload["lettura_fine_mese_a"] == "2026-10-15"
         assert len(payload["righe"]) == 5
+
+    def test_misure_gse_e_fasce_opzionali(self):
+        fasce = {"immessa": {"f1": 1.0, "f2": 2.0, "f3": 3.0, "totale": 6.0}}
+        payload = registro.payload_registro(
+            POD_A, "produzione", 2026, 9, [LETTURA], [{"fileName": "d540"}], fasce
+        )
+        assert payload["misure_gse_terna"] == [{"fileName": "d540"}]
+        assert payload["fasce"] == fasce
+        vuoto = registro.payload_registro(POD_A, "produzione", 2026, 9, [])
+        assert vuoto["misure_gse_terna"] == [] and vuoto["fasce"] == {}
 
 
 class _RispostaPost:
@@ -220,6 +265,9 @@ def _coordinator_con_webhook(
         },
     )
     coordinator._api.async_get_reading = AsyncMock(return_value=letture)
+    # Dati accessori dell'export: simulati perché toccherebbero la rete.
+    coordinator._api.async_get_monthly_time_of_use = AsyncMock(return_value=[])
+    coordinator._auth.async_get_misure_gse_terna = AsyncMock(return_value=[])
     return coordinator
 
 
