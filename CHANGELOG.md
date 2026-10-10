@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.4
+### Fixed
+- An account with an expired password used to fail the setup with the
+  generic "OTP exchange failed" abort: credentials and OTP were accepted,
+  but the portal answered with its password-renewal form instead of the
+  OAuth redirect. The form is now recognised and reported as "password
+  expired, renew it on the official site or app" — both during login and
+  at OTP submission.
+
 ## 0.5.3
 ### Fixed
 - Login and token refresh no longer hit E-Distribuzione's anti-bot check

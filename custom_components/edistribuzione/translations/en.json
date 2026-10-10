@@ -32,6 +32,7 @@
       "otp_mancante": "Enter the OTP code, or tick \"Request a new code\" to have a new one sent",
       "troppe_sessioni": "E-Distribuzione refused the login because the account has too many concurrent sessions open. Log out of the official app and website, wait a few minutes and try again: in this state no OTP code is sent.",
       "nessun_pod_selezionato": "Select at least one POD",
+      "password_scaduta": "The E-Distribuzione password has expired: credentials are accepted but the portal forces a password change. Renew it on the official site or app, then start the setup again.",
       "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting."
     },
     "abort": {
@@ -39,6 +40,7 @@
       "no_pods_found": "No POD found for this account",
       "supplies_failed": "Unexpected error while retrieving the PODs from the account. Start the setup again from the beginning (login and OTP included).",
       "otp_exchange_failed": "The OTP code was accepted but completing the login failed. Start the setup again from the beginning (login and OTP included).",
+      "password_scaduta": "The E-Distribuzione password has expired: credentials and the OTP code are accepted but the portal forces a password change. Renew it on the official site or app, then start the setup again.",
       "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting."
     }
   },

@@ -594,3 +594,41 @@ class TestAccessoBloccato:
         client, _ = _client_su_form_otp(PAGINA_ANTIBOT)
         with pytest.raises(auth.AccessoBloccato):
             await client._async_avvia_invio_otp()
+
+
+# ---------------------------------------------------------------------------
+# Form di cambio password (account con password scaduta)
+# ---------------------------------------------------------------------------
+
+PAGINA_CAMBIO_PASSWORD = (
+    "<html><head><title>Modifica la password</title></head><body>"
+    "<p>La tua password è scaduta, impostane una nuova.</p>"
+    '<input type="password" name="thePage:j_id2:i:f:pb:d:element___input____NewPassword" />'
+    "</body></html>"
+)
+
+
+class TestPasswordScaduta:
+    def test_riconosce_il_form_di_cambio_password(self):
+        with pytest.raises(auth.PasswordScaduta):
+            auth._verifica_non_password_scaduta(PAGINA_CAMBIO_PASSWORD)
+
+    def test_pagina_otp_normale_non_solleva(self):
+        """La pagina OTP non deve essere scambiata per un cambio password:
+        marcatori valutati solo sulle varianti osservate, non su 'password'
+        generico (presente anche in testo innocuo)."""
+        auth._verifica_non_password_scaduta(TestAnalizzaPaginaOtp.HTML_PAGINA_OTP)
+
+    def test_e_un_auth_error_ma_non_credenziali(self):
+        """Le credenziali sono state accettate: non e' InvalidCredentials,
+        l'azione corretta e' rinnovare la password sul portale."""
+        assert issubclass(auth.PasswordScaduta, auth.AuthError)
+        assert not issubclass(auth.PasswordScaduta, auth.InvalidCredentials)
+
+    async def test_submit_otp_su_pagina_di_rinnovo_solleva_eccezione_dedicata(self):
+        """Caso reale (password scaduta): OTP accettato, ma la risposta e'
+        il form di cambio password invece del redirect - prima cadeva nel
+        generico otp_exchange_failed."""
+        client, _ = _client_su_form_otp(PAGINA_CAMBIO_PASSWORD)
+        with pytest.raises(auth.PasswordScaduta):
+            await client._async_avvia_invio_otp()

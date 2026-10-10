@@ -100,6 +100,21 @@ _MARCATORI_ANTIBOT = (
     "incapsula incident id",
 )
 
+# Form "cambio password" che il portale impone quando la password
+# dell'account e' scaduta: credenziali e OTP vengono accettati lo stesso,
+# ma al posto del redirect OAuth arriva la pagina di rinnovo (Visualforce,
+# campi tipo *newPassword*). Va distinta dagli errori di parsing: la cura e'
+# cambiare la password sul sito/app ufficiale, non ritentare il login.
+_MARCATORI_PASSWORD_SCADUTA = (
+    "password scaduta",
+    "cambia la password",
+    "cambiare la password",
+    "modifica la password",
+    "changepassword",
+    "newpassword",
+    "nuovapassword",
+)
+
 # Testo con cui la risposta al primo submit del form conferma di avere
 # spedito il codice (confermato su HAR reale: "Abbiamo inviato un codice a 5
 # cifre al tuo indirizzo email"). Più varianti perché il canale (email/SMS) e
@@ -220,6 +235,21 @@ class AccessoBloccato(AuthError):
     niente da correggere: va segnalato in modo chiaro e riprovato più tardi,
     senza insistere.
     """
+
+
+class PasswordScaduta(AuthError):
+    """Il portale ha risposto con il form di cambio password: credenziali e
+    OTP sono stati accettati, ma la password dell'account e' scaduta.
+
+    Il login non puo' completarsi da qui: la password va rinnovata sul sito
+    o sull'app ufficiale, poi si riprova da capo.
+    """
+
+
+def _verifica_non_password_scaduta(testo: str) -> None:
+    """Alza PasswordScaduta se la risposta e' il form di cambio password."""
+    if _contiene(testo, _MARCATORI_PASSWORD_SCADUTA):
+        raise PasswordScaduta("E-Distribuzione richiede il cambio della password scaduta")
 
 
 def _verifica_non_bloccato(testo: str) -> None:
@@ -536,6 +566,9 @@ class AuthClient:
         resp = await _get_following_redirects(self._session, otp_form_url, headers=headers)
         otp_page_html = await _leggi_testo(resp)
         resp.close()
+        # Password scaduta: al posto del form OTP arriva direttamente il
+        # form di rinnovo - va intercettato prima di cercare i campi OTP.
+        _verifica_non_password_scaduta(otp_page_html)
         return otp_page_html
 
     async def _async_avvia_invio_otp(self) -> None:
@@ -616,6 +649,7 @@ class AuthClient:
             body = await _leggi_testo(resp)
 
         self._verifica_non_troppe_sessioni(body, "otp_send_debug.html")
+        _verifica_non_password_scaduta(body)
 
         self.otp_invio_confermato = _contiene(body, _MARCATORI_OTP_INVIATO)
         if not self.otp_invio_confermato:
@@ -658,6 +692,7 @@ class AuthClient:
             body = await _leggi_testo(resp)
 
         self._verifica_non_troppe_sessioni(body, "otp_submit_response_debug.html")
+        _verifica_non_password_scaduta(body)
 
         if "Codice OTP" in body and "errato" in body.lower():
             raise InvalidOtp(body[:500])
@@ -683,7 +718,9 @@ class AuthClient:
         scrapa dal testo qui sotto, non navigando."""
         headers = {"User-Agent": _MOBILE_USER_AGENT}
         async with self._session.get(next_url, headers=headers) as resp:
-            return await _leggi_testo(resp)
+            testo = await _leggi_testo(resp)
+        _verifica_non_password_scaduta(testo)
+        return testo
 
     async def _estrai_codice_autorizzazione(self, consent_html: str) -> str:
         """Passo 7: trova code/state nella pagina. Se assenti, è la prima

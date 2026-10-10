@@ -29,6 +29,7 @@ from .auth import (
     InvalidCredentials,
     InvalidOtp,
     ParsingError,
+    PasswordScaduta,
     TroppeSessioni,
 )
 from .const import (
@@ -173,6 +174,11 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # campi attesi, ma il problema non è un cambio di markup.
                 _LOGGER.warning("Login: E-Distribuzione ha risposto con la verifica antibot")
                 errors["base"] = "accesso_bloccato"
+            except PasswordScaduta:
+                # Il portale ha accettato le credenziali ma impone il
+                # cambio della password scaduta prima di proseguire.
+                _LOGGER.warning("Login: E-Distribuzione richiede il cambio della password scaduta")
+                errors["base"] = "password_scaduta"
             except ParsingError:
                 _LOGGER.exception("Parsing della pagina di login fallito")
                 errors["base"] = "cannot_connect"
@@ -219,6 +225,11 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except AccessoBloccato:
                 _LOGGER.warning("Convalida OTP: E-Distribuzione ha risposto con la verifica antibot")
                 return self.async_abort(reason="accesso_bloccato")
+            except PasswordScaduta:
+                # OTP accettato ma il portale impone il cambio della
+                # password scaduta al posto del redirect OAuth.
+                _LOGGER.warning("Convalida OTP: E-Distribuzione richiede il cambio della password scaduta")
+                return self.async_abort(reason="password_scaduta")
             except ParsingError:
                 # A questo punto l'OTP è già stato accettato da Salesforce
                 # (altrimenti avremmo preso InvalidOtp sopra): il
