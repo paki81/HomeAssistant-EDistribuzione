@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+### Added
+- Official GSE-TERNA measures in the register webhook payload: the
+  integration opens the same Aura web session the portal uses
+  (access token → `frontdoor.jsp` sid → `auraConfig` + CSRF cookie),
+  selects the POD and queries
+  `QueryRegulatoryComplianceStatusService`, returning the official
+  D540/UPN/SSP rows — produced, fed-in and withdrawn energy per band
+  plus file names and measure state — under `misure_gse_terna`.
+- `fasce` in the payload: per-band (A1 fed-in / A2 withdrawn) monthly
+  energy from `querymonthlytimeofuse`, so downstream sheets can fill
+  the F1/F2/F3 columns directly.
+- Login, token refresh and the new measures call now share one
+  primary-host → `*.my.site.com` fallback wrapper: every request that
+  hits the Imperva block is retried transparently.
+
 ## 0.6.2
 ### Fixed
 - The register export window for the end-of-month reading is wider: it now
