@@ -350,6 +350,41 @@ class TestExportAutomatico:
         assert coordinator._api.async_get_reading.await_count == 1
         invio.assert_not_awaited()
 
+    async def test_senza_letture_ma_con_fasce_invia(
+        self, hass, make_edist_coordinator, monkeypatch
+    ):
+        """POD di produzione: nessuna lettura ufficiale, ma le fasce
+        mensili bastano per l'export."""
+        anno, mese = registro.mese_precedente(date.today())
+        coordinator = _coordinator_con_webhook(make_edist_coordinator, [])
+        coordinator._api.async_get_monthly_time_of_use = AsyncMock(
+            return_value=[
+                {
+                    "readings": {
+                        "energyType": "A2",
+                        "energyT1": "10.0",
+                        "energyT2": "20.0",
+                        "energyT3": "30.0",
+                        "energyT4": "60.0",
+                    },
+                    "yearMonth": f"{anno:04d}{mese:02d}",
+                }
+            ]
+        )
+        invio = _patch_invio(monkeypatch)
+
+        await coordinator._async_esporta_registro()
+
+        invio.assert_awaited_once()
+        payload = invio.await_args.args[3]
+        assert payload["letture"] == []
+        assert payload["fasce"]["immessa"] == {
+            "f1": 10.0,
+            "f2": 20.0,
+            "f3": 30.0,
+            "totale": 60.0,
+        }
+
     async def test_errore_api_ritenta_domani_senza_morire(
         self, hass, make_edist_coordinator, monkeypatch
     ):

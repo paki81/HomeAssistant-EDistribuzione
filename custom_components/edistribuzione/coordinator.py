@@ -582,31 +582,21 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
             )
 
     async def _esporta_mese_registro(self, pod: str, anno: int, mese: int) -> bool:
-        """Richiede le letture ufficiali del mese e le POSTa al webhook.
+        """Raccoglie i dati mensili del POD e li POSTa al webhook.
 
-        False se E-Distribuzione non le ha ancora pubblicate (si riprova al
-        prossimo giro): le letture mensili ufficiali arrivano con giorni di
-        ritardo rispetto alla fine del mese.
+        False se nessuna fonte ha ancora dati per il mese (si riprova al
+        prossimo giro): le letture ufficiali arrivano con giorni di ritardo
+        e alcuni contatori (es. i POD di sola produzione) non le pubblicano
+        proprio, ma espongono comunque fasce mensili e misure GSE-TERNA.
         """
         url, segreto = self._webhook_registro  # type: ignore[misc]
         # La lettura di FINE mese è datata al 1° del mese successivo: vedi
         # registro.finestra_lettura_fine_mese.
         data_da, data_a = finestra_lettura_fine_mese(anno, mese)
         letture = await self._api.async_get_reading(pod, data_da, data_a)
-        if not letture:
-            _LOGGER.info(
-                "POD %s: letture ufficiali di %04d-%02d non ancora pubblicate, "
-                "si riprova domani",
-                pod,
-                anno,
-                mese,
-            )
-            return False
         primo, ultimo = periodo_mese(anno, mese)
-        # Le misure GSE-TERNA ufficiali (D540/UPN/SSP) e le energie mensili
-        # per fascia (time_of_use A1/A2) arricchiscono il payload: un loro
-        # fallimento non blocca l'export delle letture, che restano il dato
-        # minimo del registro.
+        # Misure GSE-TERNA ufficiali (D540/UPN/SSP) ed energie mensili per
+        # fascia (time_of_use A1/A2): un loro fallimento non blocca l'export.
         misure_gse: list[dict] = []
         fasce: dict = {}
         try:
@@ -646,16 +636,27 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                 mese,
                 err,
             )
+        if not (letture or misure_gse or any(fasce.values())):
+            _LOGGER.info(
+                "POD %s: nessun dato ufficiale di %04d-%02d ancora pubblicato, "
+                "si riprova domani",
+                pod,
+                anno,
+                mese,
+            )
+            return False
         payload = payload_registro(
             pod, self.tipo_pod(pod), anno, mese, letture, misure_gse, fasce
         )
         await async_invia_registro(self._session, url, segreto, payload)
         _LOGGER.info(
-            "POD %s: letture ufficiali di %04d-%02d inviate al webhook (%d letture)",
+            "POD %s: dati ufficiali di %04d-%02d inviati al webhook "
+            "(%d letture, %d misure GSE-TERNA)",
             pod,
             anno,
             mese,
             len(letture),
+            len(misure_gse),
         )
         return True
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1
+### Fixed
+- Register export for production-only PODs (e.g. ITP… meters): the
+  official `/reading` endpoint never publishes readings for them, so
+  the export gave up before sending anything. A month is now exported
+  as soon as ANY source has data — readings, GSE-TERNA measures or
+  monthly TOU bands — and only PODs with nothing at all are retried
+  the next day.
+
 ## 0.7.0
 ### Added
 - Official GSE-TERNA measures in the register webhook payload: the
