@@ -111,6 +111,17 @@ _MARCATORI_ANTIBOT = (
     "incapsula incident id",
 )
 
+# Regola "Transaction Security" di Salesforce che blocca l'app OAuth
+# sull'host diretto (osservata il 12 ottobre 2026 sul token endpoint:
+# 400 {"error":"app_blocked","error_description":"this app is blocked by
+# Transaction Security"}). Il refresh_token e' valido - un token scaduto
+# risponde invalid_grant - quindi e' un blocco lato server, non un problema
+# di credenziali.
+_MARCATORI_BLOCCO_SICUREZZA = (
+    '"app_blocked"',
+    "blocked by transaction security",
+)
+
 # Form "cambio password" che il portale impone quando la password
 # dell'account e' scaduta: credenziali e OTP vengono accettati lo stesso,
 # ma al posto del redirect OAuth arriva la pagina di rinnovo (Visualforce,
@@ -248,9 +259,31 @@ def _verifica_non_password_scaduta(testo: str) -> None:
 
 
 def _verifica_non_bloccato(testo: str) -> None:
-    """Alza AccessoBloccato se la risposta è la pagina antibot."""
+    """Alza AccessoBloccato se la risposta è la pagina antibot o il blocco
+    Transaction Security dell'app."""
     if _contiene(testo, _MARCATORI_ANTIBOT):
         raise AccessoBloccato("E-Distribuzione ha risposto con la pagina antibot (Imperva)")
+    if _contiene(testo, _MARCATORI_BLOCCO_SICUREZZA):
+        raise AccessoBloccato("E-Distribuzione blocca l'app con una regola Transaction Security")
+
+
+# Rifiuti di loginUser che non riguardano email/password: un blocco lato
+# portale (regola di sicurezza, account bloccato dall'amministratore)
+# mostrato come "credenziali non valide" manderebbe l'utente a ricontrollare
+# dati corretti e a ritentare, peggiorando il blocco.
+_MARCATORI_LOGIN_BLOCCATO = (
+    "transaction security",
+    "blocked",
+    "bloccat",
+    "amministratore",
+    "administrator",
+)
+
+
+def _verifica_login_non_bloccato(messaggio: str) -> None:
+    """Alza AccessoBloccato se loginUser rifiuta per un blocco del portale."""
+    if _contiene(messaggio, _MARCATORI_LOGIN_BLOCCATO):
+        raise AccessoBloccato(f"E-Distribuzione ha bloccato il login: {messaggio[:200]}")
 
 
 async def _leggi_testo(resp: aiohttp.ClientResponse) -> str:
@@ -617,6 +650,10 @@ class AuthClient:
             # "credenziali non valide" manderebbe l'utente a ricontrollare
             # email e password mentre il problema è altrove.
             self._verifica_non_troppe_sessioni(str(return_value))
+            _verifica_login_non_bloccato(str(return_value))
+            # Il testo del portale finisce nel log: senza, ogni rifiuto
+            # appare solo come "Email o password non valide".
+            _LOGGER.warning("loginUser ha rifiutato l'accesso: %r", str(return_value)[:300])
             raise InvalidCredentials(str(return_value))
 
         # Seguirlo stabilisce il cookie di sessione 'sid' e atterra su una

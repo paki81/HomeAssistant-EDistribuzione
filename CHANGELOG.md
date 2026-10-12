@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.2
+### Fixed
+- E-Distribuzione is now blocking the fallback host too, with a
+  Salesforce "Transaction Security" rule (`app_blocked`). The block is
+  now recognised as a temporary server-side block instead of a failed
+  refresh: the integration shows a Repairs notice (not a credentials
+  error), keeps the stored refresh token and retries on its own every
+  hour.
+- The portal's real login refusal text is now logged
+  (`loginUser ha rifiutato l'accesso: '…'`): every refusal used to
+  surface as "invalid email or password", even when the credentials
+  were correct. A security-block refusal is reported as blocked access.
+
 ## 0.7.1
 ### Fixed
 - Register export for production-only PODs (e.g. ITP… meters): the

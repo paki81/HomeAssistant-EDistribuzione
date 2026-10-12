@@ -560,6 +560,24 @@ class TestSuHost:
 # ---------------------------------------------------------------------------
 
 
+class TestLoginBloccato:
+    @pytest.mark.parametrize(
+        "messaggio",
+        [
+            "Your login attempt has been blocked by Transaction Security.",
+            "Il tentativo di accesso è stato bloccato dall'amministratore.",
+        ],
+    )
+    def test_blocco_del_portale_e_accesso_bloccato(self, messaggio):
+        with pytest.raises(auth.AccessoBloccato):
+            auth._verifica_login_non_bloccato(messaggio)
+
+    def test_password_errata_resta_credenziali_non_valide(self):
+        auth._verifica_login_non_bloccato(
+            "Il tuo tentativo di accesso non è riuscito. Verifica che nome utente e password siano corretti."
+        )
+
+
 class TestGerarchiaEccezioni:
     def test_invalid_credentials_e_sottoclasse_di_auth_error(self):
         assert issubclass(auth.InvalidCredentials, auth.AuthError)
@@ -651,6 +669,32 @@ class TestAccessoBloccato:
         session = _SessioneACoda([_RispostaToken('{"access_token": "nuovo"}')])
         tokens = await auth.AuthClient(session).async_refresh_access_token("rt")
         assert (tokens.access_token, tokens.refresh_token) == ("nuovo", "rt")
+
+    async def test_refresh_bloccato_da_transaction_security(self):
+        """Primario dietro antibot e diretto che rifiuta con la regola
+        Transaction Security di Salesforce (osservato il 12 ottobre 2026):
+        il refresh_token e' valido, quindi e' un AccessoBloccato e non un
+        errore di credenziali che manderebbe a rifare il login."""
+        session = _SessioneACoda([
+            _RispostaToken(PAGINA_ANTIBOT),
+            _RispostaToken(
+                '{"error":"app_blocked","error_description":"this app is blocked by Transaction Security"}',
+                status=400,
+            ),
+        ])
+        with pytest.raises(auth.AccessoBloccato):
+            await auth.AuthClient(session).async_refresh_access_token("rt")
+
+    async def test_refresh_token_scaduto_resta_un_auth_error_generico(self):
+        session = _SessioneACoda([
+            _RispostaToken(
+                '{"error":"invalid_grant","error_description":"expired access/refresh token"}',
+                status=400,
+            ),
+        ])
+        with pytest.raises(auth.AuthError) as exc:
+            await auth.AuthClient(session).async_refresh_access_token("rt")
+        assert not isinstance(exc.value, auth.AccessoBloccato)
 
     async def test_invio_otp_bloccato(self):
         client, _ = _client_su_form_otp(PAGINA_ANTIBOT)

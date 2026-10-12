@@ -33,7 +33,7 @@
       "troppe_sessioni": "E-Distribuzione ha rifiutato l'accesso perché l'account ha troppe sessioni aperte contemporaneamente. Esci dall'app ufficiale e dal sito, attendi qualche minuto e riprova: in questo stato nessun codice OTP viene inviato.",
       "nessun_pod_selezionato": "Seleziona almeno un POD",
       "password_scaduta": "La password di E-Distribuzione è scaduta: le credenziali vengono accettate ma il portale impone il cambio. Rinnovala dal sito o dall'app ufficiale, poi riprova la configurazione da capo.",
-      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
+      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico (verifica antibot o regola di sicurezza), quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
     },
     "abort": {
       "reauth_successful": "Credenziali aggiornate con successo",
@@ -41,7 +41,7 @@
       "supplies_failed": "Errore imprevisto nel recupero dei POD dall'account. Riprova la configurazione da capo (login + OTP inclusi).",
       "otp_exchange_failed": "Il codice OTP è stato accettato ma il completamento dell'accesso è fallito. Riprova la configurazione da capo (login + OTP inclusi).",
       "password_scaduta": "La password di E-Distribuzione è scaduta: le credenziali e il codice OTP vengono accettati ma il portale impone il cambio. Rinnovala dal sito o dall'app ufficiale, poi riprova la configurazione da capo.",
-      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
+      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico (verifica antibot o regola di sicurezza), quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
     }
   },
   "options": {
@@ -100,7 +100,7 @@
       "nessun_pod_da_aggiungere": "Tutti i POD del tuo account sono già configurati qui",
       "refresh_failed": "Non è stato possibile rinnovare l'accesso a E-Distribuzione. Riprova più tardi; se il problema persiste potrebbe servire un nuovo login (rimuovi e riconfigura l'integrazione).",
       "supplies_failed": "Errore imprevisto nel recupero dei POD dall'account. Riprova più tardi.",
-      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
+      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico (verifica antibot o regola di sicurezza), quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
     }
   },
   "entity": {
@@ -228,7 +228,7 @@
       "message": "Errore importando il periodo per il POD {pod}: {errore}"
     },
     "accesso_bloccato": {
-      "message": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot. I consumi riprendono ad aggiornarsi appena l'accesso torna disponibile."
+      "message": "E-Distribuzione al momento blocca l'accesso automatico (verifica antibot o regola di sicurezza). I consumi riprendono ad aggiornarsi appena l'accesso torna disponibile."
     },
     "registro_webhook_non_configurato": {
       "message": "Nessun webhook configurato: imposta l'URL del webhook nelle opzioni dell'integrazione (Registro letture)."
@@ -243,7 +243,7 @@
   "issues": {
     "accesso_bloccato": {
       "title": "E-Distribuzione blocca l'accesso automatico",
-      "description": "E-Distribuzione risponde con una verifica antibot invece di concedere l'accesso, quindi l'integrazione non riesce a rinnovarlo e i consumi non si aggiornano. Non dipende dalla tua configurazione né dalle credenziali, e i dati già importati restano. L'integrazione riprova da sola ogni ora e questo avviso sparisce appena l'accesso torna disponibile."
+      "description": "E-Distribuzione blocca l'accesso automatico (verifica antibot o regola di sicurezza), quindi l'integrazione non riesce a rinnovarlo e i consumi non si aggiornano. Non dipende dalla tua configurazione né dalle credenziali, e i dati già importati restano. L'integrazione riprova da sola ogni ora e questo avviso sparisce appena l'accesso torna disponibile."
     }
   }
 }
