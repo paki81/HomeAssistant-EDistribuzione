@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.3
+### Fixed
+- The login flow now follows the official iOS app more closely: complete
+  Safari/navigation and Aura AJAX headers, native app headers for the
+  OAuth token exchange, the real Aura CSRF cookie in `loginUser` when the
+  portal provides one, and the `PED_Login.init` call that the app sends
+  before submitting credentials.
+- `KO: Errore Tecnico` is now shown as an E-Distribuzione service error
+  instead of "invalid email or password". Genuine credential refusals
+  still show the normal invalid-credentials error.
+
 ## 0.7.2
 ### Fixed
 - E-Distribuzione is now blocking the fallback host too, with a

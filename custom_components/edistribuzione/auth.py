@@ -69,7 +69,54 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15"
+# La webview dell'app iOS usa uno UA Safari completo. La forma abbreviata
+# usata fin qui ("... AppleWebKit/605.1.15") veniva classificata da Imperva
+# come traffico automatico già alla pagina di login.
+_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 "
+    "Mobile/15E148 Safari/604.1"
+)
+# Le chiamate native dell'app (token/userinfo) non passano dalla webview e
+# usano invece lo UA CFNetwork osservato nella stessa cattura.
+_APP_USER_AGENT = "e-Distribuzione/1 CFNetwork/3896.200.41 Darwin/27.2.0"
+_MOBILE_ACCEPT_HTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+_MOBILE_ACCEPT_LANGUAGE = "it-IT,it;q=0.9"
+
+
+def _headers_navigazione(sec_fetch_site: str = "none") -> dict[str, str]:
+    """Header delle navigazioni nella webview dell'app iOS."""
+    return {
+        "User-Agent": _MOBILE_USER_AGENT,
+        "Accept": _MOBILE_ACCEPT_HTML,
+        "Accept-Language": _MOBILE_ACCEPT_LANGUAGE,
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": sec_fetch_site,
+    }
+
+
+def _headers_ajax() -> dict[str, str]:
+    """Header delle POST Aura/JSF originate dalla pagina già caricata."""
+    return {
+        "User-Agent": _MOBILE_USER_AGENT,
+        "Accept": "*/*",
+        "Accept-Language": _MOBILE_ACCEPT_LANGUAGE,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+
+def _headers_app() -> dict[str, str]:
+    """Header delle chiamate native dell'app (fuori dalla webview)."""
+    return {
+        "User-Agent": _APP_USER_AGENT,
+        "Accept": "*/*",
+        "Accept-Language": _MOBILE_ACCEPT_LANGUAGE,
+    }
+
+
 # Le chiamate Aura delle pagine del portale arrivano da un browser desktop:
 # lo stesso UA usato nella cattura in cui è stata verificata la pipeline.
 _BROWSER_USER_AGENT = (
@@ -243,6 +290,15 @@ class AccessoBloccato(AuthError):
     """
 
 
+class ErroreServizio(AuthError):
+    """E-Distribuzione ha risposto con un errore tecnico del portale.
+
+    Esempio osservato: 'KO: Errore Tecnico'. Non e' una prova che email o
+    password siano sbagliate e non indica da solo un blocco antibot o
+    Transaction Security: va mostrato come problema del servizio.
+    """
+
+
 class PasswordScaduta(AuthError):
     """Il portale ha risposto con il form di cambio password: credenziali e
     OTP sono stati accettati, ma la password dell'account e' scaduta.
@@ -279,11 +335,22 @@ _MARCATORI_LOGIN_BLOCCATO = (
     "administrator",
 )
 
+# 'KO: Errore Tecnico' e' stato osservato su un account con credenziali
+# corrette: non va confuso con un rifiuto delle credenziali.
+_MARCATORI_ERRORE_SERVIZIO = (
+    "errore tecnico",
+    "technical error",
+)
+
 
 def _verifica_login_non_bloccato(messaggio: str) -> None:
-    """Alza AccessoBloccato se loginUser rifiuta per un blocco del portale."""
+    """Classifica i rifiuti di loginUser che non riguardano le credenziali."""
     if _contiene(messaggio, _MARCATORI_LOGIN_BLOCCATO):
         raise AccessoBloccato(f"E-Distribuzione ha bloccato il login: {messaggio[:200]}")
+    if _contiene(messaggio, _MARCATORI_ERRORE_SERVIZIO):
+        raise ErroreServizio(
+            f"E-Distribuzione ha risposto con un errore tecnico: {messaggio[:200]}"
+        )
 
 
 async def _leggi_testo(resp: aiohttp.ClientResponse) -> str:
@@ -332,12 +399,23 @@ async def _get_following_redirects(
     Ritorna la risposta finale (status < 300, nessun altro Location); il
     chiamante è responsabile di chiudere/consumare 'resp' come al solito.
     """
-    resp = await session.get(url, params=params, headers=headers, allow_redirects=False)
+    request_headers = dict(headers or {})
+    resp = await session.get(
+        url, params=params, headers=request_headers, allow_redirects=False
+    )
 
     for _ in range(_MAX_REDIRECT_HOPS):
         location = resp.headers.get("Location")
         if location is None:
             return resp
+
+        if request_headers.get("Sec-Fetch-Mode") == "navigate":
+            # Come la webview dell'app: dopo il primo hop i redirect sono
+            # navigazioni same-origin e portano il Referer della pagina
+            # precedente. Senza questi segnali Imperva classifica più
+            # facilmente il client come automatico.
+            request_headers["Referer"] = str(resp.url)
+            request_headers["Sec-Fetch-Site"] = "same-origin"
 
         resp.close()
         location_url = aiohttp.client.URL(location, encoded=True)
@@ -348,7 +426,7 @@ async def _get_following_redirects(
         # la pagina antibot invece della destinazione.
         if riscrivi is not None:
             next_url = aiohttp.client.URL(riscrivi(str(next_url)), encoded=True)
-        resp = await session.get(next_url, headers=headers, allow_redirects=False)
+        resp = await session.get(next_url, headers=request_headers, allow_redirects=False)
 
     resp.close()
     raise AuthError(
@@ -509,7 +587,7 @@ class AuthClient:
         self._code_verifier, code_challenge = _make_pkce_pair()
         self._oauth_state = _b64url(secrets.token_bytes(16))
 
-        headers = {"User-Agent": _MOBILE_USER_AGENT}
+        headers = _headers_navigazione()
         params = {
             "prompt": "login",
             "nonce": _b64url(secrets.token_bytes(16)),
@@ -559,16 +637,27 @@ class AuthClient:
         """Passo 2: estrae fwuid/loaded dalla pagina di login, sottomette
         l'azione Aura loginUser, e ritorna l'URL di frontdoor.jsp da
         seguire."""
-        headers = {"User-Agent": _MOBILE_USER_AGENT}
+        headers = _headers_ajax()
 
         self._flow.fwuid = self._estrai_fwuid(login_page_html)
         loaded = self._estrai_loaded(login_page_html)
-        # aura.token: confermato su una HAR reale con login riuscito che il
-        # client invia letteralmente la stringa "null" (non un token vero)
-        # per questa azione specifica, e il server la accetta
-        # ("state":"SUCCESS"). Verosimilmente non c'è ancora una sessione
-        # autenticata da proteggere via CSRF a questo punto del flusso.
-        self._flow.aura_token = "null"
+        # Nella cattura dell'app del 14/10/2026 loginUser manda il valore
+        # del cookie CSRF indicato da auraConfig.eikoocnekot. Sul dominio
+        # diretto la pagina può invece non esporre quel cookie: in quel
+        # caso conserviamo il vecchio ripiego "null", già accettato dal
+        # server per il controllo iniziale delle credenziali.
+        try:
+            nome_cookie = self._estrai_nome_cookie_aura(
+                login_page_html, "login"
+            )
+            self._flow.aura_token = self._aura_cookie_token(nome_cookie)
+        except ParsingError as err:
+            _LOGGER.warning(
+                "Token CSRF Aura non trovato sulla pagina di login (%s): "
+                "riprovo con aura.token='null'",
+                err,
+            )
+            self._flow.aura_token = "null"
 
         # json.dumps invece di concatenazione di stringhe: evita JSON
         # malformato se email/password contenessero virgolette o backslash.
@@ -598,6 +687,9 @@ class AuthClient:
             "globals": {},
             "uad": True,
         })
+        await self._async_inizializza_componente_login(
+            headers, aura_context, aura_page_uri, referer
+        )
         data = {
             "message": message,
             "aura.context": aura_context,
@@ -662,6 +754,56 @@ class AuthClient:
         # pubblico dietro Imperva: si riscrive sull'host attivo.
         return self._su_host(return_value[len("OK:") :])
 
+    async def _async_inizializza_componente_login(
+        self,
+        headers: dict[str, str],
+        aura_context: str,
+        aura_page_uri: str,
+        referer: str,
+    ) -> None:
+        """PED_Login.init, chiamato dall'app prima di loginUser.
+
+        Nella cattura del 14/10/2026 la sequenza è getConfigData -> init ->
+        loginUser. Senza init Salesforce può rispondere al login con un
+        generico 'KO: Errore Tecnico' anche se il payload è ben formato.
+        """
+        message = json.dumps({
+            "actions": [{
+                "id": "1;a",
+                "descriptor": "apex://PED_LoginController/ACTION$init",
+                "callingDescriptor": "markup://c:PED_Login",
+                "params": {},
+            }]
+        })
+        data = {
+            "message": message,
+            "aura.context": aura_context,
+            "aura.pageURI": aura_page_uri,
+            "aura.token": self._flow.aura_token or "null",
+        }
+        init_headers = {
+            **headers,
+            "X-SFDC-Page-Scope-Id": str(uuid.uuid4()),
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "Origin": self._origine,
+            "Referer": referer,
+        }
+        async with self._session.post(
+            f"{self._su_host(AURA_ENDPOINT)}?r=1&other.PED_Login.init=1",
+            data=data,
+            headers=init_headers,
+        ) as resp:
+            raw_text = await _leggi_testo(resp)
+        try:
+            payload = json.loads(raw_text)
+            azione = payload["actions"][0]
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as err:
+            raise ParsingError("Risposta non-JSON a PED_Login.init") from err
+        if azione.get("state") != "SUCCESS":
+            raise AuthError(
+                f"Inizializzazione del login rifiutata da Salesforce: {raw_text[:300]}"
+            )
+
     async def _segui_a_pagina_otp(self, frontdoor_url: str) -> str:
         """Passo 3: frontdoor.jsp stabilisce il cookie di sessione 'sid' e
         atterra su una pagina-ponte che fa un redirect via JAVASCRIPT
@@ -669,7 +811,7 @@ class AuthClient:
         form OTP - un browser lo segue automaticamente, qui va estratto e
         seguito a mano.
         """
-        headers = {"User-Agent": _MOBILE_USER_AGENT}
+        headers = _headers_navigazione("same-origin")
 
         resp = await _get_following_redirects(
             self._session, frontdoor_url, headers=headers, riscrivi=self._su_host
@@ -760,8 +902,14 @@ class AuthClient:
         l'invio effettivo del codice (async_submit_otp), non quelli della
         pagina di atterraggio: ruotano ad ogni submit del form.
         """
-        headers = {"User-Agent": _MOBILE_USER_AGENT, "Faces-Request": "partial/ajax"}
         url = self._su_host(self._flow.form_action_url or LOGINFLOW_URL)
+        headers = {
+            **_headers_ajax(),
+            "Faces-Request": "partial/ajax",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": self._origine,
+            "Referer": url,
+        }
         async with self._session.post(url, data=data, headers=headers) as resp:
             body = await _leggi_testo(resp)
 
@@ -801,10 +949,16 @@ class AuthClient:
     async def _sottometti_codice_otp(self, otp_code: str) -> str:
         """Passo 5: POST del form con il codice; ritorna l'URL scoperto nel
         meta tag Location della risposta."""
-        headers = {"User-Agent": _MOBILE_USER_AGENT, "Faces-Request": "partial/ajax"}
         data = self._form_convalida(otp_code)
 
         url = self._su_host(self._flow.form_action_url or LOGINFLOW_URL)
+        headers = {
+            **_headers_ajax(),
+            "Faces-Request": "partial/ajax",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": self._origine,
+            "Referer": url,
+        }
         async with self._session.post(url, data=data, headers=headers) as resp:
             body = await _leggi_testo(resp)
 
@@ -833,7 +987,10 @@ class AuthClient:
         innesca poi un redirect JS verso eneldist://redirect?code=..., che
         aiohttp non può seguire (schema custom, non HTTP): il codice si
         scrapa dal testo qui sotto, non navigando."""
-        headers = {"User-Agent": _MOBILE_USER_AGENT}
+        headers = _headers_navigazione("same-origin")
+        headers["Referer"] = self._su_host(
+            self._flow.form_action_url or LOGINFLOW_URL
+        )
         async with self._session.get(next_url, headers=headers) as resp:
             testo = await _leggi_testo(resp)
         _verifica_non_password_scaduta(testo)
@@ -906,7 +1063,7 @@ class AuthClient:
             dati.get("save"),
         )
         headers = {
-            "User-Agent": _MOBILE_USER_AGENT,
+            **_headers_navigazione("same-origin"),
             "Content-Type": "application/x-www-form-urlencoded",
             "Origin": self._origine,
             "Referer": f"{self._origine}/PortaleClienti/",
@@ -997,7 +1154,9 @@ class AuthClient:
             "client_id": OAUTH_CLIENT_ID,
             "grant_type": "authorization_code",
         }
-        async with self._session.post(self._su_host(OAUTH_TOKEN_URL), data=data) as resp:
+        async with self._session.post(
+            self._su_host(OAUTH_TOKEN_URL), data=data, headers=_headers_app()
+        ) as resp:
             payload = self._json_token(await _leggi_testo(resp), resp.status)
         return self._tokens_from_payload(payload)
 
@@ -1022,7 +1181,7 @@ class AuthClient:
             "client_id": OAUTH_CLIENT_ID,
         }
         async with self._session.post(
-            self._su_host(OAUTH_TOKEN_URL), data=data
+            self._su_host(OAUTH_TOKEN_URL), data=data, headers=_headers_app()
         ) as resp:
             text = await _leggi_testo(resp)
             if resp.status != 200:
@@ -1135,20 +1294,42 @@ class AuthClient:
         self._aura_token = self._aura_cookie_token(nome_cookie)
 
     @staticmethod
-    def _estrai_aura_config(html: str) -> tuple[str, str]:
+    def _estrai_aura_config_dict(html: str, pagina: str) -> dict:
+        """Oggetto auraConfig incorporato in una pagina Salesforce."""
+        match = re.search(r"var\s+auraConfig\s*=\s*(\{)", html)
+        if not match:
+            raise ParsingError(f"auraConfig non trovato nella pagina {pagina}")
+        try:
+            # raw_decode si ferma al primo oggetto: sulla stessa riga può
+            # seguire altro JavaScript.
+            cfg, _ = json.JSONDecoder().raw_decode(html, match.end(1) - 1)
+        except (json.JSONDecodeError, TypeError) as err:
+            raise ParsingError(f"auraConfig irriconoscibile: {err}") from err
+        if not isinstance(cfg, dict):
+            raise ParsingError("auraConfig irriconoscibile: non è un oggetto")
+        return cfg
+
+    @classmethod
+    def _estrai_nome_cookie_aura(cls, html: str, pagina: str) -> str:
+        """Nome del cookie il cui valore va inviato come aura.token."""
+        cfg = cls._estrai_aura_config_dict(html, pagina)
+        nome_cookie = cfg.get("eikoocnekot") or cfg.get("token")
+        if not nome_cookie:
+            raise ParsingError(
+                f"Nome del cookie CSRF Aura assente in auraConfig ({pagina})"
+            )
+        return nome_cookie
+
+    @classmethod
+    def _estrai_aura_config(cls, html: str) -> tuple[str, str]:
         """(aura.context serializzato, nome del cookie CSRF) dalla pagina.
 
         auraConfig.eikoocnekot ('tokenCookie' al contrario) è il NOME del
         cookie che contiene il token CSRF: il valore da passare come
         aura.token va letto dal cookie jar della sessione.
         """
-        match = re.search(r"var\s+auraConfig\s*=\s*(\{)", html)
-        if not match:
-            raise ParsingError("auraConfig non trovato nella pagina gse-terna")
+        cfg = cls._estrai_aura_config_dict(html, "gse-terna")
         try:
-            # raw_decode si ferma al primo oggetto: sulla stessa riga può
-            # seguire altro JavaScript.
-            cfg, _ = json.JSONDecoder().raw_decode(html, match.end(1) - 1)
             ctx = cfg["context"]
             context = json.dumps(
                 {
@@ -1161,10 +1342,9 @@ class AuthClient:
                     "uad": True,
                 }
             )
-            nome_cookie = cfg["eikoocnekot"] or cfg["token"]
-        except (json.JSONDecodeError, KeyError, TypeError) as err:
+        except (KeyError, TypeError) as err:
             raise ParsingError(f"auraConfig irriconoscibile: {err}") from err
-        return context, nome_cookie
+        return context, cls._estrai_nome_cookie_aura(html, "gse-terna")
 
     def _aura_cookie_token(self, nome_cookie: str) -> str:
         """Valore del cookie CSRF il cui nome è indicato da auraConfig."""

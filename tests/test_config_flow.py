@@ -19,6 +19,7 @@ from custom_components.edistribuzione import auth as edist_auth
 from custom_components.edistribuzione import config_flow as cf
 from custom_components.edistribuzione.auth import (
     AccessoBloccato,
+    ErroreServizio,
     InvalidCredentials,
     InvalidOtp,
     ParsingError,
@@ -99,6 +100,19 @@ async def test_login_bloccato_dalla_verifica_antibot(hass, edist_mocks):
     assert res["type"] == FlowResultType.FORM
     assert res["step_id"] == "user"
     assert res["errors"] == {"base": "accesso_bloccato"}
+
+
+async def test_errore_tecnico_del_portale_non_e_invalid_auth(hass, edist_mocks):
+    """'KO: Errore Tecnico' è un errore del portale: mostrarlo come
+    credenziali errate manderebbe l'utente a ricontrollare dati corretti."""
+    edist_mocks.auth.async_begin_login.side_effect = ErroreServizio("KO: Errore Tecnico")
+    res = await _fino_a_user(hass)
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "a@b.it", "password": "x"}
+    )
+    assert res["type"] == FlowResultType.FORM
+    assert res["step_id"] == "user"
+    assert res["errors"] == {"base": "errore_servizio"}
 
 
 async def test_convalida_otp_bloccata_dalla_verifica_antibot(hass, edist_mocks):

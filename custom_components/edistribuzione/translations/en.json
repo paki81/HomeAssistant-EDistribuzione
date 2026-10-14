@@ -28,6 +28,7 @@
     "error": {
       "invalid_auth": "Invalid email or password",
       "cannot_connect": "Unable to reach E-Distribuzione",
+      "errore_servizio": "E-Distribuzione replied with a technical error. It does not depend on your credentials: try again later.",
       "invalid_otp": "Wrong or expired OTP code. It must be the code sent by this setup: one generated on the website or in the app belongs to another login session and is always rejected.",
       "otp_mancante": "Enter the OTP code, or tick \"Request a new code\" to have a new one sent",
       "troppe_sessioni": "E-Distribuzione refused the login because the account has too many concurrent sessions open. Log out of the official app and website, wait a few minutes and try again: in this state no OTP code is sent.",

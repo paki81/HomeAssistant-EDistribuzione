@@ -451,7 +451,7 @@ class _SessioneACoda:
         return self._risposte.pop(0)
 
     def post(self, url, data=None, headers=None, allow_redirects=None):
-        self.post_inviati.append({"url": url, "data": data})
+        self.post_inviati.append({"url": url, "data": data, "headers": headers})
         return self._prossima()
 
     def get(self, url, headers=None, params=None):
@@ -572,6 +572,12 @@ class TestLoginBloccato:
         with pytest.raises(auth.AccessoBloccato):
             auth._verifica_login_non_bloccato(messaggio)
 
+    def test_errore_tecnico_del_portale_e_errore_servizio(self):
+        """Osservato su una istanza reale: 'KO: Errore Tecnico' non prova
+        che email o password siano sbagliate."""
+        with pytest.raises(auth.ErroreServizio):
+            auth._verifica_login_non_bloccato("KO: Errore Tecnico")
+
     def test_password_errata_resta_credenziali_non_valide(self):
         auth._verifica_login_non_bloccato(
             "Il tuo tentativo di accesso non è riuscito. Verifica che nome utente e password siano corretti."
@@ -593,6 +599,10 @@ class TestGerarchiaEccezioni:
         l'account ad avere troppe sessioni aperte."""
         assert issubclass(auth.TroppeSessioni, auth.AuthError)
         assert not issubclass(auth.TroppeSessioni, auth.InvalidCredentials)
+
+    def test_errore_servizio_e_sottoclasse_di_auth_error_ma_non_di_credenziali(self):
+        assert issubclass(auth.ErroreServizio, auth.AuthError)
+        assert not issubclass(auth.ErroreServizio, auth.InvalidCredentials)
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +835,59 @@ class TestAuraCookieToken:
         client = auth.AuthClient(_SessioneACoda([]))
         with pytest.raises(auth.ParsingError):
             client._aura_cookie_token("__Host-CSRF_TEST")
+
+
+class TestLoginUserAuraToken:
+    async def test_login_user_usa_il_cookie_csrf_indicato_da_aura_config(self):
+        """Cattura dell'app del 14/10/2026: loginUser invia il valore del
+        cookie __Host-ERIC... indicato da auraConfig.eikoocnekot; quando è
+        disponibile dobbiamo riprodurre lo stesso comportamento."""
+        session = _SessioneACoda([
+            _risposta_aura({"loginInfo": {}, "maintenanceOn": False}),
+            _risposta_aura("OK:/PortaleClienti/secur/frontdoor.jsp"),
+        ])
+        session.cookie_jar = [_CookieFinto("__Host-CSRF_TEST", "TOKEN_CSRF_LOGIN")]
+        client = auth.AuthClient(session)
+
+        await client._invia_credenziali(
+            "utente@example.invalid",
+            "password-finta",
+            AURA_CONFIG_HTML,
+            "/PortaleClienti/setup/secur/RemoteAccessAuthorizationPage.apexp?source=x",
+            "/PortaleClienti/s/login/?startURL=x",
+            "https://private.e-distribuzione.it/PortaleClienti/s/login/",
+        )
+
+        init_post, login_post = session.post_inviati
+        assert "other.PED_Login.init=1" in init_post["url"]
+        init_azione = json.loads(init_post["data"]["message"])["actions"][0]
+        assert init_azione["descriptor"].endswith("$init")
+        assert login_post["data"]["aura.token"] == "TOKEN_CSRF_LOGIN"
+        assert init_post["data"]["aura.token"] == "TOKEN_CSRF_LOGIN"
+        assert login_post["headers"]["User-Agent"] == auth._MOBILE_USER_AGENT
+        assert login_post["headers"]["Sec-Fetch-Mode"] == "cors"
+
+    async def test_senza_cookie_csrf_mantiene_il_ripiego_null(self):
+        """Se una versione futura della pagina non pubblica più il cookie,
+        conserviamo il comportamento storico invece di fallire prima del
+        login."""
+        session = _SessioneACoda([
+            _risposta_aura({"loginInfo": {}, "maintenanceOn": False}),
+            _risposta_aura("OK:/frontdoor"),
+        ])
+        client = auth.AuthClient(session)
+
+        await client._invia_credenziali(
+            "utente@example.invalid",
+            "password-finta",
+            AURA_CONFIG_HTML,
+            "/start",
+            "/login",
+            "https://private.e-distribuzione.it/PortaleClienti/s/login/",
+        )
+
+        assert session.post_inviati[0]["data"]["aura.token"] == "null"
+        assert session.post_inviati[1]["data"]["aura.token"] == "null"
 
 
 class TestMisureGseTerna:

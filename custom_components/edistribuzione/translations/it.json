@@ -28,6 +28,7 @@
     "error": {
       "invalid_auth": "Email o password non valide",
       "cannot_connect": "Impossibile contattare E-Distribuzione",
+      "errore_servizio": "E-Distribuzione ha risposto con un errore tecnico. Non dipende dalle tue credenziali: riprova più tardi.",
       "invalid_otp": "Codice OTP errato o scaduto. Deve essere il codice inviato da questa configurazione: uno generato sul sito o nell'app appartiene a un'altra sessione di login e viene sempre rifiutato.",
       "otp_mancante": "Inserisci il codice OTP, oppure spunta \"Richiedi un nuovo codice\" per farne inviare uno nuovo",
       "troppe_sessioni": "E-Distribuzione ha rifiutato l'accesso perché l'account ha troppe sessioni aperte contemporaneamente. Esci dall'app ufficiale e dal sito, attendi qualche minuto e riprova: in questo stato nessun codice OTP viene inviato.",
