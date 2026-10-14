@@ -773,12 +773,21 @@ class _CookieFinto:
         self.value = value
 
 
+def _risposta_aura_azioni(azioni) -> _RispostaFinta:
+    return _RispostaFinta(json.dumps({"actions": azioni}))
+
+
 def _risposta_aura(return_value) -> _RispostaFinta:
-    return _RispostaFinta(
-        json.dumps(
-            {"actions": [{"id": "1;a", "state": "SUCCESS", "returnValue": return_value}]}
-        )
+    return _risposta_aura_azioni(
+        [{"id": "1;a", "state": "SUCCESS", "returnValue": return_value}]
     )
+
+
+def _risposta_aura_bootstrap() -> _RispostaFinta:
+    return _risposta_aura_azioni([
+        {"id": "20;a", "state": "SUCCESS", "returnValue": {}},
+        {"id": "37;a", "state": "SUCCESS", "returnValue": {}},
+    ])
 
 
 RIGA_D540 = {
@@ -843,6 +852,7 @@ class TestLoginUserAuraToken:
         cookie __Host-ERIC... indicato da auraConfig.eikoocnekot; quando è
         disponibile dobbiamo riprodurre lo stesso comportamento."""
         session = _SessioneACoda([
+            _risposta_aura_bootstrap(),
             _risposta_aura({"loginInfo": {}, "maintenanceOn": False}),
             _risposta_aura("OK:/PortaleClienti/secur/frontdoor.jsp"),
         ])
@@ -858,12 +868,25 @@ class TestLoginUserAuraToken:
             "https://private.e-distribuzione.it/PortaleClienti/s/login/",
         )
 
-        init_post, login_post = session.post_inviati
+        bootstrap_post, init_post, login_post = session.post_inviati
+        assert "HostConfig.getConfigData=1" in bootstrap_post["url"]
         assert "other.PED_Login.init=1" in init_post["url"]
+        bootstrap_azioni = json.loads(bootstrap_post["data"]["message"])["actions"]
         init_azione = json.loads(init_post["data"]["message"])["actions"][0]
+        login_azione = json.loads(login_post["data"]["message"])["actions"][0]
+        assert [a["descriptor"].split("$")[-1] for a in bootstrap_azioni] == [
+            "getMessagingPermAndPref",
+            "getConfigData",
+        ]
         assert init_azione["descriptor"].endswith("$init")
+        assert len({a["id"] for a in [*bootstrap_azioni, init_azione, login_azione]}) == 4
+        assert len({
+            post["headers"]["X-SFDC-Page-Scope-Id"]
+            for post in (bootstrap_post, init_post, login_post)
+        }) == 1
         assert login_post["data"]["aura.token"] == "TOKEN_CSRF_LOGIN"
         assert init_post["data"]["aura.token"] == "TOKEN_CSRF_LOGIN"
+        assert bootstrap_post["data"]["aura.token"] == "TOKEN_CSRF_LOGIN"
         assert login_post["headers"]["User-Agent"] == auth._MOBILE_USER_AGENT
         assert login_post["headers"]["Sec-Fetch-Mode"] == "cors"
 
@@ -872,6 +895,7 @@ class TestLoginUserAuraToken:
         conserviamo il comportamento storico invece di fallire prima del
         login."""
         session = _SessioneACoda([
+            _risposta_aura_bootstrap(),
             _risposta_aura({"loginInfo": {}, "maintenanceOn": False}),
             _risposta_aura("OK:/frontdoor"),
         ])
@@ -888,6 +912,7 @@ class TestLoginUserAuraToken:
 
         assert session.post_inviati[0]["data"]["aura.token"] == "null"
         assert session.post_inviati[1]["data"]["aura.token"] == "null"
+        assert session.post_inviati[2]["data"]["aura.token"] == "null"
 
 
 class TestMisureGseTerna:

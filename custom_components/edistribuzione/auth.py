@@ -663,7 +663,9 @@ class AuthClient:
         # malformato se email/password contenessero virgolette o backslash.
         message = json.dumps({
             "actions": [{
-                "id": "1;a",
+                # ID Aura distinto per ogni azione della pagina: nella
+                # cattura dell'app loginUser usa "107;a".
+                "id": "107;a",
                 "descriptor": "apex://PED_LoginController/ACTION$loginUser",
                 "callingDescriptor": "markup://c:PED_Login",
                 "params": {
@@ -687,8 +689,14 @@ class AuthClient:
             "globals": {},
             "uad": True,
         })
+        # Nella cattura tutte le chiamate Aura della stessa pagina riusano
+        # lo stesso Page-Scope-Id: non va rigenerato tra init e loginUser.
+        page_scope_id = str(uuid.uuid4())
+        await self._async_configura_host_aura(
+            headers, aura_context, aura_page_uri, referer, page_scope_id
+        )
         await self._async_inizializza_componente_login(
-            headers, aura_context, aura_page_uri, referer
+            headers, aura_context, aura_page_uri, referer, page_scope_id
         )
         data = {
             "message": message,
@@ -705,7 +713,7 @@ class AuthClient:
         # rischio zero da aggiungere.
         login_headers = {
             **headers,
-            "X-SFDC-Page-Scope-Id": str(uuid.uuid4()),
+            "X-SFDC-Page-Scope-Id": page_scope_id,
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
             "Origin": self._origine,
             "Referer": referer,
@@ -754,12 +762,82 @@ class AuthClient:
         # pubblico dietro Imperva: si riscrive sull'host attivo.
         return self._su_host(return_value[len("OK:") :])
 
+    async def _async_configura_host_aura(
+        self,
+        headers: dict[str, str],
+        aura_context: str,
+        aura_page_uri: str,
+        referer: str,
+        page_scope_id: str,
+    ) -> None:
+        """Bootstrap Aura della pagina di login dell'app iOS.
+
+        La cattura mostra due serviceComponent prima di PED_Login.init. I
+        valori restituiti non sono riusati nei passi seguenti: per questo un
+        esito non-SUCCESS viene solo loggato, mentre gli errori di rete o le
+        pagine antibot restano fatali come nelle altre chiamate.
+        """
+        message = json.dumps({
+            "actions": [
+                {
+                    "id": "20;a",
+                    "descriptor": (
+                        "serviceComponent://ui.chatter.components.messages."
+                        "MessagesController/ACTION$getMessagingPermAndPref"
+                    ),
+                    "callingDescriptor": "UNKNOWN",
+                    "params": {},
+                },
+                {
+                    "id": "37;a",
+                    "descriptor": (
+                        "serviceComponent://ui.force.components.controllers."
+                        "hostConfig.HostConfigController/ACTION$getConfigData"
+                    ),
+                    "callingDescriptor": "UNKNOWN",
+                    "params": {},
+                },
+            ]
+        })
+        data = {
+            "message": message,
+            "aura.context": aura_context,
+            "aura.pageURI": aura_page_uri,
+            "aura.token": self._flow.aura_token or "null",
+        }
+        config_headers = {
+            **headers,
+            "X-SFDC-Page-Scope-Id": page_scope_id,
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "Origin": self._origine,
+            "Referer": referer,
+        }
+        async with self._session.post(
+            f"{self._su_host(AURA_ENDPOINT)}?r=0&"
+            "ui-chatter-components-messages.Messages.getMessagingPermAndPref=1&"
+            "ui-force-components-controllers-hostConfig.HostConfig.getConfigData=1",
+            data=data,
+            headers=config_headers,
+        ) as resp:
+            raw_text = await _leggi_testo(resp)
+        try:
+            azioni = json.loads(raw_text)["actions"]
+            stati = [azione.get("state") for azione in azioni]
+        except (json.JSONDecodeError, KeyError, TypeError) as err:
+            raise ParsingError("Risposta non-JSON al bootstrap Aura del login") from err
+        if stati != ["SUCCESS"] * len(stati):
+            _LOGGER.warning(
+                "Bootstrap Aura del login non completato (%s): continuo con PED_Login.init",
+                stati,
+            )
+
     async def _async_inizializza_componente_login(
         self,
         headers: dict[str, str],
         aura_context: str,
         aura_page_uri: str,
         referer: str,
+        page_scope_id: str,
     ) -> None:
         """PED_Login.init, chiamato dall'app prima di loginUser.
 
@@ -769,7 +847,7 @@ class AuthClient:
         """
         message = json.dumps({
             "actions": [{
-                "id": "1;a",
+                "id": "53;a",
                 "descriptor": "apex://PED_LoginController/ACTION$init",
                 "callingDescriptor": "markup://c:PED_Login",
                 "params": {},
@@ -783,7 +861,7 @@ class AuthClient:
         }
         init_headers = {
             **headers,
-            "X-SFDC-Page-Scope-Id": str(uuid.uuid4()),
+            "X-SFDC-Page-Scope-Id": page_scope_id,
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
             "Origin": self._origine,
             "Referer": referer,

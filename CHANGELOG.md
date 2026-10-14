@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.4
+### Fixed
+- `loginUser` could still receive `KO: Errore Tecnico`: Aura action IDs
+  are now unique and the bootstrap sequence is closer to the official app
+  (`HostConfig.getConfigData`, then `PED_Login.init`, then `loginUser`),
+  reusing the same page-scope ID across the three calls.
+
 ## 0.7.3
 ### Fixed
 - The login flow now follows the official iOS app more closely: complete
