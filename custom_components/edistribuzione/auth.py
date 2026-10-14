@@ -643,14 +643,12 @@ class AuthClient:
         loaded = self._estrai_loaded(login_page_html)
         # Nella cattura dell'app del 14/10/2026 loginUser manda il valore
         # del cookie CSRF indicato da auraConfig.eikoocnekot. Sul dominio
-        # diretto la pagina può invece non esporre quel cookie: in quel
-        # caso conserviamo il vecchio ripiego "null", già accettato dal
-        # server per il controllo iniziale delle credenziali.
+        # diretto la pagina non espone quel cookie ma pubblica lo stesso
+        # token inline come auraConfig.ConnectCSRFToken: senza di esso
+        # loginUser può fallire con 'KO: Errore Tecnico' dopo aver
+        # riconosciuto credenziali valide.
         try:
-            nome_cookie = self._estrai_nome_cookie_aura(
-                login_page_html, "login"
-            )
-            self._flow.aura_token = self._aura_cookie_token(nome_cookie)
+            self._flow.aura_token = self._estrai_token_aura_login(login_page_html)
         except ParsingError as err:
             _LOGGER.warning(
                 "Token CSRF Aura non trovato sulla pagina di login (%s): "
@@ -1397,6 +1395,23 @@ class AuthClient:
                 f"Nome del cookie CSRF Aura assente in auraConfig ({pagina})"
             )
         return nome_cookie
+
+    def _estrai_token_aura_login(self, html: str) -> str:
+        """Token CSRF della pagina login, da cookie o dal campo inline.
+
+        private.e-distribuzione.it espone il nome del cookie in
+        auraConfig.eikoocnekot; il fallback *.my.site.com espone invece
+        direttamente ConnectCSRFToken. Il valore va copiato così com'è in
+        aura.token su tutte le azioni della pagina.
+        """
+        cfg = self._estrai_aura_config_dict(html, "login")
+        nome_cookie = cfg.get("eikoocnekot") or cfg.get("token")
+        if nome_cookie:
+            return self._aura_cookie_token(nome_cookie)
+        token_inline = cfg.get("ConnectCSRFToken")
+        if isinstance(token_inline, str) and token_inline:
+            return token_inline
+        raise ParsingError("Token CSRF Aura assente in auraConfig (login)")
 
     @classmethod
     def _estrai_aura_config(cls, html: str) -> tuple[str, str]:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.5
+### Fixed
+- Direct-host logins now send the real `auraConfig.ConnectCSRFToken` as
+  `aura.token` instead of the historical `"null"` fallback, matching the
+  page contract used by Salesforce and preventing `KO: Errore Tecnico`
+  after valid credentials.
+
 ## 0.7.4
 ### Fixed
 - `loginUser` could still receive `KO: Errore Tecnico`: Aura action IDs

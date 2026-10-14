@@ -764,6 +764,15 @@ AURA_CONFIG_HTML = (
     "};</script></head><body>pagina</body></html>"
 )
 
+AURA_CONFIG_CONNECT_HTML = (
+    '<html><head><script>var auraConfig = {'
+    '"context":{"fwuid":"FW_TEST",'
+    '"loaded":{"APPLICATION@markup://siteforce:loginApp2":"x"}},'
+    '"contextPath":"/PortaleClienti/s/sfsites",'
+    '"ConnectCSRFToken":"TOKEN_CSRF_INLINE"'
+    "};</script></head><body>pagina</body></html>"
+)
+
 
 class _CookieFinto:
     """Morsel minimo: l'attributo usato da _aura_cookie_token è .key/.value."""
@@ -890,10 +899,35 @@ class TestLoginUserAuraToken:
         assert login_post["headers"]["User-Agent"] == auth._MOBILE_USER_AGENT
         assert login_post["headers"]["Sec-Fetch-Mode"] == "cors"
 
-    async def test_senza_cookie_csrf_mantiene_il_ripiego_null(self):
-        """Se una versione futura della pagina non pubblica più il cookie,
-        conserviamo il comportamento storico invece di fallire prima del
-        login."""
+    async def test_host_diretto_usa_connect_csrf_token_inline(self):
+        """Il dominio *.my.site.com non espone il cookie indicato da
+        eikoocnekot: il token CSRF arriva inline come ConnectCSRFToken."""
+        session = _SessioneACoda([
+            _risposta_aura_bootstrap(),
+            _risposta_aura({"loginInfo": {}, "maintenanceOn": False}),
+            _risposta_aura("OK:/frontdoor"),
+        ])
+        client = auth.AuthClient(session)
+
+        await client._invia_credenziali(
+            "utente@example.invalid",
+            "password-finta",
+            AURA_CONFIG_CONNECT_HTML,
+            "/start",
+            "/login",
+            "https://edistribuzione.my.site.com/PortaleClienti/s/login/",
+        )
+
+        assert [post["data"]["aura.token"] for post in session.post_inviati] == [
+            "TOKEN_CSRF_INLINE",
+            "TOKEN_CSRF_INLINE",
+            "TOKEN_CSRF_INLINE",
+        ]
+
+    async def test_senza_token_csrf_mantiene_il_ripiego_null(self):
+        """Se una versione futura della pagina non pubblica più né il cookie
+        né ConnectCSRFToken, conserviamo il comportamento storico invece di
+        fallire prima del login."""
         session = _SessioneACoda([
             _risposta_aura_bootstrap(),
             _risposta_aura({"loginInfo": {}, "maintenanceOn": False}),
