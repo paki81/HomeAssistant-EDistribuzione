@@ -36,6 +36,7 @@ from .api import ApiClient, ApiError
 from .auth import AccessoBloccato, AuthClient, AuthError
 from .const import (
     ABBANDONO_CODA_DOPO_GIORNI,
+    CONF_ACCESS_TOKEN,
     CONF_DATA_INSTALLAZIONE,
     CONF_GIORNI_DA_RIPROVARE,
     CONF_ORA_RICHIESTA,
@@ -218,9 +219,14 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         self._api.update_token(tokens.access_token)
         self._access_token = tokens.access_token
 
-        if tokens.refresh_token != refresh_token:
+        if tokens.refresh_token != refresh_token or (
+            CONF_ACCESS_TOKEN in self.entry.data
+            and self.entry.data.get(CONF_ACCESS_TOKEN) != tokens.access_token
+        ):
             new_data = dict(self.entry.data)
             new_data[CONF_REFRESH_TOKEN] = tokens.refresh_token
+            if CONF_ACCESS_TOKEN in new_data:
+                new_data[CONF_ACCESS_TOKEN] = tokens.access_token
             self.hass.config_entries.async_update_entry(self.entry, data=new_data)
 
     # ------------------------------------------------------------------

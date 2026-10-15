@@ -61,6 +61,12 @@ def edist_mocks(monkeypatch):
     auth.async_refresh_access_token = AsyncMock(
         return_value=SimpleNamespace(access_token="acc2", refresh_token="ref-nuovo")
     )
+    auth._url_authorize_browser = Mock(
+        return_value="https://private.e-distribuzione.it/PortaleClienti/services/oauth2/authorize?state=s"
+    )
+    auth.async_scambia_url_browser = AsyncMock(
+        return_value=SimpleNamespace(access_token="acc-browser", refresh_token="ref-browser")
+    )
     api = Mock()
     api.async_get_supplies = AsyncMock(return_value=[{"IdPod": "IT001E00000009"}])
 
@@ -98,21 +104,25 @@ async def test_login_bloccato_dalla_verifica_antibot(hass, edist_mocks):
         res["flow_id"], {"email": "a@b.it", "password": "x"}
     )
     assert res["type"] == FlowResultType.FORM
-    assert res["step_id"] == "user"
-    assert res["errors"] == {"base": "accesso_bloccato"}
+    assert res["step_id"] == "browser"
+    assert res["description_placeholders"]["login_url"].endswith("/PortaleClienti/s/login/")
 
 
 async def test_errore_tecnico_del_portale_non_e_invalid_auth(hass, edist_mocks):
-    """'KO: Errore Tecnico' è un errore del portale: mostrarlo come
-    credenziali errate manderebbe l'utente a ricontrollare dati corretti."""
+    """'KO: Errore Tecnico' è un errore del portale: passa al login via
+    browser invece di mostrarlo come credenziali errate."""
     edist_mocks.auth.async_begin_login.side_effect = ErroreServizio("KO: Errore Tecnico")
     res = await _fino_a_user(hass)
     res = await hass.config_entries.flow.async_configure(
         res["flow_id"], {"email": "a@b.it", "password": "x"}
     )
     assert res["type"] == FlowResultType.FORM
-    assert res["step_id"] == "user"
-    assert res["errors"] == {"base": "errore_servizio"}
+    assert res["step_id"] == "browser"
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"redirect_url": "eneldist://redirect#access_token=a&refresh_token=r&state=s"}
+    )
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert res["data"][CONF_REFRESH_TOKEN] == "ref-browser"
 
 
 async def test_convalida_otp_bloccata_dalla_verifica_antibot(hass, edist_mocks):

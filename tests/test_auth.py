@@ -899,9 +899,10 @@ class TestLoginUserAuraToken:
         assert login_post["headers"]["User-Agent"] == auth._MOBILE_USER_AGENT
         assert login_post["headers"]["Sec-Fetch-Mode"] == "cors"
 
-    async def test_host_diretto_usa_connect_csrf_token_inline(self):
-        """Il dominio *.my.site.com non espone il cookie indicato da
-        eikoocnekot: il token CSRF arriva inline come ConnectCSRFToken."""
+    async def test_host_diretto_senza_cookie_usa_null_non_connect_csrf(self):
+        """Il dominio *.my.site.com non espone eikoocnekot ma solo
+        ConnectCSRFToken (che in aura_prod.js appartiene a getConnectCsrfToken
+        e non ad aura.token): aura.token deve restare 'null'."""
         session = _SessioneACoda([
             _risposta_aura_bootstrap(),
             _risposta_aura({"loginInfo": {}, "maintenanceOn": False}),
@@ -919,10 +920,36 @@ class TestLoginUserAuraToken:
         )
 
         assert [post["data"]["aura.token"] for post in session.post_inviati] == [
-            "TOKEN_CSRF_INLINE",
-            "TOKEN_CSRF_INLINE",
-            "TOKEN_CSRF_INLINE",
+            "null",
+            "null",
+            "null",
         ]
+
+    def test_estrai_start_url_flow_decodifica_solo_gli_slash(self):
+        url = (
+            "https://private.e-distribuzione.it/PortaleClienti/s/login"
+            "?startURL=%2FPortaleClienti%2Fsetup%2Fsecur%2FRemoteAccessAuthorizationPage.apexp"
+            "%3Fsource%3DCAAAA%253D%253D%26display%3Dtouch&login_hint=a%40b.it&display=touch"
+        )
+        assert auth.AuthClient._estrai_start_url_flow(url) == (
+            "/PortaleClienti/setup/secur/RemoteAccessAuthorizationPage.apexp"
+            "%3Fsource%3DCAAAA%253D%253D%26display%3Dtouch&login_hint=a%40b.it&display=touch"
+        )
+
+    async def test_login_browser_fragment_estrae_token_anche_da_riga_console(self):
+        client = auth.AuthClient(_SessioneACoda([]))
+        url_auth = client._url_authorize_browser("a@b.it")
+        assert "response_type=token" in url_auth
+        assert "prompt=login" not in url_auth
+        assert "login_hint" not in url_auth
+        riga = (
+            "Failed to launch 'eneldist://redirect#access_token=ACC_123"
+            f"&refresh_token=REF_456&state={client._oauth_state}' because the scheme "
+            "does not have a registered handler."
+        )
+        tokens = await client.async_scambia_url_browser(riga)
+        assert tokens.access_token == "ACC_123"
+        assert tokens.refresh_token == "REF_456"
 
     async def test_senza_token_csrf_mantiene_il_ripiego_null(self):
         """Se una versione futura della pagina non pubblica più né il cookie

@@ -100,6 +100,8 @@ DIREZIONI_CON_FASCE = (MAGNITUDE_PRELEVATA,)
 # --- Configurazione persistita ------------------------------------------------
 CONF_PODS = "pods"  # lista di codici POD: tutti sulla stessa utenza già autenticata
 CONF_REFRESH_TOKEN = "refresh_token"
+CONF_ACCESS_TOKEN = "access_token"
+CONF_INSTANCE_URL = "instance_url"
 
 CONF_TIPO_POD = "tipo_pod"  # {pod: "scambio"|"produzione"}, in entry.options
 TIPO_POD_SCAMBIO = "scambio"

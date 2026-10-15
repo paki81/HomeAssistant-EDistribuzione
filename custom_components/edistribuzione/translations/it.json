@@ -6,7 +6,15 @@
         "description": "Usa le stesse credenziali dell'app o del sito ufficiale E-Distribuzione. Dopo l'accesso ti verrà chiesto un codice OTP, ricevuto via email o SMS: sarà inviato da questa configurazione, non usare codici generati sul sito o nell'app. Se hai l'app o il sito aperti, esci prima da lì: E-Distribuzione limita il numero di sessioni contemporanee per account.{pod_correnti}",
         "data": {
           "email": "Email",
-          "password": "Password"
+          "password": "Password",
+          "usa_browser": "Accedi tramite il tuo browser (consigliato se il login automatico viene bloccato)"
+        }
+      },
+      "browser": {
+        "title": "Accedi dal tuo browser",
+        "description": "{avviso}Completa l'accesso dal browser in due passi (la password non passa da Home Assistant):{pod_correnti}\n\n1. Da un computer apri [il sito di E-Distribuzione]({login_url}) e accedi con email, password e codice OTP fino a entrare nell'area clienti (se in quel browser sei già entrato con l'account giusto, passa al punto 2).\n2. **Nella stessa finestra** apri [il link di autorizzazione]({url}). La pagina resterà bianca o mostrerà un avviso di apertura impossibile: è normale.\n3. Apri gli strumenti per sviluppatori del browser (F12, oppure ⌥⌘J su Mac), vai nella scheda **Console** e copia la riga rossa che contiene `eneldist://redirect` (puoi copiare anche la riga intera), poi incollala qui sotto.",
+        "data": {
+          "redirect_url": "Indirizzo o riga della Console con eneldist://redirect"
         }
       },
       "otp": {
@@ -34,7 +42,11 @@
       "troppe_sessioni": "E-Distribuzione ha rifiutato l'accesso perché l'account ha troppe sessioni aperte contemporaneamente. Esci dall'app ufficiale e dal sito, attendi qualche minuto e riprova: in questo stato nessun codice OTP viene inviato.",
       "nessun_pod_selezionato": "Seleziona almeno un POD",
       "password_scaduta": "La password di E-Distribuzione è scaduta: le credenziali vengono accettate ma il portale impone il cambio. Rinnovala dal sito o dall'app ufficiale, poi riprova la configurazione da capo.",
-      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico (verifica antibot o regola di sicurezza), quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
+      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico (verifica antibot o regola di sicurezza), quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere.",
+      "password_mancante": "Inserisci la password, oppure spunta \"Accedi tramite il tuo browser\"",
+      "url_non_valido": "Non è l'URL atteso: copia l'indirizzo completo dalla barra del browser alla fine del login, quello che inizia con eneldist://redirect",
+      "state_errato": "Questo redirect appartiene a una sessione di login diversa: rifai l'accesso con l'URL mostrato sopra e incolla il nuovo indirizzo",
+      "codice_non_valido": "Il codice è scaduto o è già stato usato (vale pochi minuti e una sola volta): rifai il login nel browser e incolla subito il nuovo indirizzo"
     },
     "abort": {
       "reauth_successful": "Credenziali aggiornate con successo",

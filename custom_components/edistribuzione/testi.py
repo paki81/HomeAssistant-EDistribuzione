@@ -43,6 +43,11 @@ TESTI: dict[str, dict[str, str]] = {
             "verrebbe rifiutato."
         ),
         "nota_reauth": " Stai aggiornando le credenziali per i POD: {pods}.",
+        "browser_avviso_fallback": (
+            "Il login automatico è stato rifiutato da E-Distribuzione (verifica "
+            "antibot o errore tecnico): usa il login nel browser qui sotto. "
+            "\n\n"
+        ),
         "nessun_pod": "nessuno",
         "nessun_dato_pod": "nessun dato per il periodo richiesto",
         "letture_non_pubblicate": "letture ufficiali del mese non ancora pubblicate",
@@ -71,6 +76,11 @@ TESTI: dict[str, dict[str, str]] = {
             "rejected."
         ),
         "nota_reauth": " You are updating the credentials for these PODs: {pods}.",
+        "browser_avviso_fallback": (
+            "E-Distribuzione rejected the automatic login (antibot check or "
+            "technical error): use the browser login below instead. "
+            "\n\n"
+        ),
         "nessun_pod": "none",
         "nessun_dato_pod": "no data for the requested period",
         "letture_non_pubblicate": "official monthly readings not published yet",

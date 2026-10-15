@@ -6,7 +6,15 @@
         "description": "Use the same credentials as the official E-Distribuzione app or website. After signing in you will be asked for an OTP code, received by email or SMS: it will be sent by this setup, do not use codes generated on the website or in the app. If you have the app or the website open, log out there first: E-Distribuzione limits the number of concurrent sessions per account.{pod_correnti}",
         "data": {
           "email": "Email",
-          "password": "Password"
+          "password": "Password",
+          "usa_browser": "Sign in through your browser (recommended if the automatic login is blocked)"
+        }
+      },
+      "browser": {
+        "title": "Sign in from your browser",
+        "description": "{avviso}Complete the sign-in in your browser in two steps (your password never passes through Home Assistant):{pod_correnti}\n\n1. On a computer, open [the E-Distribuzione website]({login_url}) and sign in with email, password and OTP code until you reach the customer area (if you are already signed in with the right account in that browser, skip to step 2).\n2. **In the same window**, open [the authorization link]({url}). The page will stay blank or show an \"unable to open\" notice: this is expected.\n3. Open the browser developer tools (F12, or ⌥⌘J on Mac), go to the **Console** tab and copy the red line containing `eneldist://redirect` (you can copy the whole line), then paste it below.",
+        "data": {
+          "redirect_url": "Address or Console line containing eneldist://redirect"
         }
       },
       "otp": {
@@ -34,7 +42,11 @@
       "troppe_sessioni": "E-Distribuzione refused the login because the account has too many concurrent sessions open. Log out of the official app and website, wait a few minutes and try again: in this state no OTP code is sent.",
       "nessun_pod_selezionato": "Select at least one POD",
       "password_scaduta": "The E-Distribuzione password has expired: credentials are accepted but the portal forces a password change. Renew it on the official site or app, then start the setup again.",
-      "accesso_bloccato": "E-Distribuzione is currently blocking automated access (anti-bot check or security rule), so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting."
+      "accesso_bloccato": "E-Distribuzione is currently blocking automated access (anti-bot check or security rule), so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting.",
+      "password_mancante": "Enter the password, or tick \"Sign in through your browser\"",
+      "url_non_valido": "This is not the expected URL: copy the full address from the browser's address bar at the end of the login, the one starting with eneldist://redirect",
+      "state_errato": "This redirect belongs to a different login session: sign in again with the URL shown above and paste the new address",
+      "codice_non_valido": "The code has expired or was already used (it lasts a few minutes and works once): sign in again in the browser and paste the new address right away"
     },
     "abort": {
       "reauth_successful": "Credentials updated successfully",

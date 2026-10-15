@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.6
+### Added
+- Browser sign-in in two steps (OAuth user-agent flow `response_type=token`
+  without `prompt=login`): when E-Distribuzione blocks the automated login
+  with Imperva or answers with `KO: Errore Tecnico` on the fallback host,
+  the setup automatically switches to the browser flow (also selectable up
+  front from the login form). Signing in first on
+  `private.e-distribuzione.it` and then opening the authorization link in
+  the same window keeps the session on the official domain instead of
+  redirecting to `edistribuzione.my.site.com`, and returns `access_token`
+  and `refresh_token` directly in the `eneldist://redirect#...` fragment
+  (the whole Console line can be pasted).
+
+### Fixed
+- Direct login now preserves the raw percent-encoded `startURL` query tail
+  with only `%2F` decoded to `/`, matching `c:PED_Login.doInit` in
+  `auraCmpDef`, and keeps `aura.token="null"` when `auraConfig` does not
+  expose an Aura CSRF cookie instead of sending `ConnectCSRFToken`.
+
 ## 0.7.5
 ### Fixed
 - Direct-host logins now send the real `auraConfig.ConnectCSRFToken` as

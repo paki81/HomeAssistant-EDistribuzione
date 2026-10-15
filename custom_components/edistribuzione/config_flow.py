@@ -26,14 +26,17 @@ from .api import ApiClient
 from .auth import (
     AccessoBloccato,
     AuthClient,
+    CodiceNonValido,
     ErroreServizio,
     InvalidCredentials,
     InvalidOtp,
+    LoginBrowserError,
     ParsingError,
     PasswordScaduta,
     TroppeSessioni,
 )
 from .const import (
+    CONF_ACCESS_TOKEN,
     CONF_ORA_RICHIESTA,
     CONF_PODS,
     CONF_REFRESH_TOKEN,
@@ -41,6 +44,7 @@ from .const import (
     CONF_REGISTRO_WEBHOOK,
     CONF_TIPO_POD,
     DOMAIN,
+    LOGIN_PAGE_URL,
     ORA_MINIMA_RICHIESTA,
     TIPO_POD_DEFAULT,
     TIPO_POD_PRODUZIONE,
@@ -50,12 +54,25 @@ from .testi import testo
 
 _LOGGER = logging.getLogger(__name__)
 
-# Il codice OTP è Optional (non Required) perché lo stesso form serve anche a
-# richiedere un nuovo codice senza averne uno da inserire: chi non ha
-# ricevuto nulla spunta la casella e sottomette il form vuoto.
+# Email e password sono Optional nello schema perché lo stesso form consente
+# di spuntare 'usa_browser' e passare subito al login nel browser senza
+# inserire credenziali in Home Assistant.
+STEP_USER_SCHEMA = vol.Schema({
+    vol.Optional("email", default=""): str,
+    vol.Optional("password", default=""): str,
+    vol.Optional("usa_browser", default=False): bool,
+})
+
 STEP_OTP_SCHEMA = vol.Schema({
     vol.Optional("otp", default=""): str,
     vol.Optional("richiedi_nuovo_codice", default=False): bool,
+})
+
+# Step "browser": l'utente apre l'URL OAuth mostrato, fa login + OTP nel suo
+# browser (dove la verifica antibot passa) e incolla l'URL eneldist://redirect
+# con il codice.
+STEP_BROWSER_SCHEMA = vol.Schema({
+    vol.Required("redirect_url"): str,
 })
 
 
@@ -85,10 +102,29 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._refresh_token: str | None = None
         self._pods_disponibili: list[dict] = []
         self._reauth_entry: config_entries.ConfigEntry | None = None
+        self._browser_url: str | None = None
+        self._browser_email: str | None = None
+        self._browser_avviso: str | None = None
 
     def _testo(self, chiave: str, **segnaposto: str) -> str:
         """Testo per i description_placeholders, che HA non traduce: vedi testi.py."""
         return testo(self.hass.config.language, chiave, **segnaposto)
+
+    def _ensure_auth(self) -> AuthClient:
+        """Sessione dedicata + AuthClient, create una sola volta per flow.
+
+        Sessione dedicata (non quella condivisa di Home Assistant): il login
+        automatico passa per una catena di redirect Salesforce che dipende da
+        un cookie di sessione impostato a metà strada, che la sessione
+        condivisa non garantisce di persistere in modo affidabile per questo
+        dominio - il sintomo è un loop di redirect infinito perché il server
+        non vede mai tornare il cookie. Creata una volta e riusata tra i
+        retry di questo stesso flow."""
+        if self._session is None:
+            self._session = async_create_clientsession(self.hass)
+        if self._auth is None:
+            self._auth = AuthClient(self._session)
+        return self._auth
 
     # ------------------------------------------------------------------
     # Login email/password -> OTP
@@ -150,20 +186,25 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Sessione dedicata (non quella condivisa di Home Assistant):
-            # questo login passa per una catena di redirect Salesforce che
-            # dipende da un cookie di sessione impostato a metà strada, che
-            # la sessione condivisa non garantisce di persistere in modo
-            # affidabile per questo dominio - il sintomo è un loop di
-            # redirect infinito perché il server non vede mai tornare il
-            # cookie. Creata una volta e riusata tra i retry di questo
-            # stesso flow.
-            if self._session is None:
-                self._session = async_create_clientsession(self.hass)
-            self._auth = AuthClient(self._session)
+            email = (user_input.get("email") or "").strip()
+            password = user_input.get("password") or ""
+            self._browser_email = email or None
+            if user_input.get("usa_browser"):
+                # L'utente ha scelto il login nel suo browser: la password
+                # non viene né inviata né memorizzata dall'integrazione.
+                return await self.async_step_browser()
+            if not email or not password:
+                errors["password"] = "password_mancante"
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=STEP_USER_SCHEMA,
+                    errors=errors,
+                    description_placeholders={"pod_correnti": self._nota_reauth()},
+                )
+            auth = self._ensure_auth()
 
             try:
-                await self._auth.async_begin_login(user_input["email"], user_input["password"])
+                await auth.async_begin_login(email, password)
             except InvalidCredentials:
                 errors["base"] = "invalid_auth"
             except TroppeSessioni:
@@ -173,15 +214,19 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.warning("Login rifiutato: troppe sessioni aperte sull'account")
                 errors["base"] = "troppe_sessioni"
             except AccessoBloccato:
-                # Prima di ParsingError: la pagina antibot non contiene i
-                # campi attesi, ma il problema non è un cambio di markup.
+                # La pagina antibot non contiene i campi attesi e non è un
+                # cambio di markup: il login via browser è il ripiego
+                # funzionante, perché lì la verifica può passare.
                 _LOGGER.warning("Login: E-Distribuzione ha risposto con la verifica antibot")
-                errors["base"] = "accesso_bloccato"
+                self._browser_avviso = self._testo("browser_avviso_fallback")
+                return await self.async_step_browser()
             except ErroreServizio:
-                # 'KO: Errore Tecnico' e simili sono rifiuti del portale,
-                # non credenziali sbagliate né un problema di connettività.
+                # 'KO: Errore Tecnico' è un rifiuto del portale: sull'host
+                # diretto arriva anche a un browser reale, quindi l'unica
+                # via è il login via browser sull'host ufficiale.
                 _LOGGER.warning("Login: E-Distribuzione ha risposto con un errore tecnico")
-                errors["base"] = "errore_servizio"
+                self._browser_avviso = self._testo("browser_avviso_fallback")
+                return await self.async_step_browser()
             except PasswordScaduta:
                 # Il portale ha accettato le credenziali ma impone il
                 # cambio della password scaduta prima di proseguire.
@@ -202,7 +247,7 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required("email"): str, vol.Required("password"): str}),
+            data_schema=STEP_USER_SCHEMA,
             errors=errors,
             description_placeholders={"pod_correnti": self._nota_reauth()},
         )
@@ -251,21 +296,77 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Errore imprevisto durante lo scambio del codice OTP")
                 return self.async_abort(reason="otp_exchange_failed")
             else:
-                self._access_token = tokens.access_token
-                self._refresh_token = tokens.refresh_token
-                if self._reauth_entry is not None:
-                    nuovi_dati = {
-                        **self._reauth_entry.data,
-                        CONF_REFRESH_TOKEN: tokens.refresh_token,
-                    }
-                    self.hass.config_entries.async_update_entry(
-                        self._reauth_entry, data=nuovi_dati
-                    )
-                    await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
-                    return self.async_abort(reason="reauth_successful")
-                return await self.async_step_pod()
+                return await self._completa_tokens(tokens)
 
         return self._form_otp(errors, avviso)
+
+    # ------------------------------------------------------------------
+    # Login via browser (ripiego quando il portale blocca l'automatico)
+    # ------------------------------------------------------------------
+
+    async def _completa_tokens(self, tokens):
+        """Chiusura comune a OTP e login via browser: conserva i token e
+        conclude il reauth o passa alla scelta dei POD."""
+        self._access_token = tokens.access_token
+        self._refresh_token = tokens.refresh_token
+        if self._reauth_entry is not None:
+            nuovi_dati = {
+                **self._reauth_entry.data,
+                CONF_ACCESS_TOKEN: tokens.access_token,
+                CONF_REFRESH_TOKEN: tokens.refresh_token,
+            }
+            self.hass.config_entries.async_update_entry(
+                self._reauth_entry, data=nuovi_dati
+            )
+            await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
+            return self.async_abort(reason="reauth_successful")
+        return await self.async_step_pod()
+
+    async def async_step_browser(self, user_input: dict[str, Any] | None = None):
+        """Login fatto dall'utente nel suo browser in 2 passi:
+        1. accesso su private.e-distribuzione.it/PortaleClienti/s/login/
+        2. apertura del link di autorizzazione (_url_authorize_browser) nella
+           stessa finestra e copia del redirect eneldist://redirect#...
+        """
+        errors: dict[str, str] = {}
+        auth = self._ensure_auth()
+        if self._browser_url is None:
+            self._browser_url = auth._url_authorize_browser(self._browser_email)
+
+        if user_input is not None:
+            try:
+                tokens = await auth.async_scambia_url_browser(user_input["redirect_url"])
+            except LoginBrowserError as err:
+                errors["base"] = "state_errato" if err.motivo == "state" else "url_non_valido"
+            except CodiceNonValido:
+                # Il codice è monouso e scade in pochi minuti: va rifatto
+                # il login nel browser con lo stesso URL mostrato.
+                errors["base"] = "codice_non_valido"
+            except AccessoBloccato:
+                _LOGGER.warning(
+                    "Scambio del codice OAuth: E-Distribuzione ha risposto con la verifica antibot"
+                )
+                errors["base"] = "accesso_bloccato"
+            except ParsingError:
+                _LOGGER.exception("Parsing della risposta del token endpoint fallito")
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001 - vedi commento in async_step_user
+                _LOGGER.exception("Errore imprevisto nello scambio del codice OAuth")
+                errors["base"] = "cannot_connect"
+            else:
+                return await self._completa_tokens(tokens)
+
+        return self.async_show_form(
+            step_id="browser",
+            data_schema=STEP_BROWSER_SCHEMA,
+            errors=errors,
+            description_placeholders={
+                "login_url": LOGIN_PAGE_URL,
+                "url": self._browser_url,
+                "avviso": self._browser_avviso or "",
+                "pod_correnti": self._nota_reauth(),
+            },
+        )
 
     # ------------------------------------------------------------------
     # Selezione POD (solo per il setup iniziale, non per il reauth)
@@ -290,10 +391,10 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         def crea_entry(pods: list[str]):
             titolo = pods[0] if len(pods) == 1 else f"{len(pods)} POD"
-            return self.async_create_entry(
-                title=titolo,
-                data={CONF_PODS: pods, CONF_REFRESH_TOKEN: self._refresh_token},
-            )
+            dati = {CONF_PODS: pods, CONF_REFRESH_TOKEN: self._refresh_token}
+            if self._access_token:
+                dati[CONF_ACCESS_TOKEN] = self._access_token
+            return self.async_create_entry(title=titolo, data=dati)
 
         # Con un solo POD sull'account non serve far scegliere.
         if len(self._pods_disponibili) == 1:

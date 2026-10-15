@@ -48,7 +48,7 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 import aiohttp
 
@@ -205,6 +205,29 @@ _MARCATORI_OTP_INVIATO = (
 # quindi il valore va confrontato per intero, non cercato come sottostringa.
 _ETICHETTE_CONSENSO = ("consenti", "allow", "approve", "autorizza", "accetta")
 
+# Il redirect verso l'app così come lo mostra il browser: da solo, o dentro la
+# riga che Chrome/Edge scrive nella Console sviluppatori ("Failed to launch
+# 'eneldist://redirect#access_token=...' because the scheme does not have a
+# registered handler."), virgolette incluse.
+_RE_REDIRECT_APP = re.compile(re.escape(OAUTH_REDIRECT_URI) + r"[^\s'\"<>]*")
+
+
+def _parametri_redirect(url: str) -> dict[str, str]:
+    """Parametri del redirect dell'app, dal fragment (user-agent flow) o
+    dalla query.
+
+    Decodificati con unquote, non come form (parse_qs): un '+' in un token è
+    un più letterale, e trasformato in spazio darebbe un token che sembra
+    valido ma viene rifiutato.
+    """
+    parti = urlsplit(url)
+    parametri: dict[str, str] = {}
+    for coppia in (parti.fragment or parti.query).split("&"):
+        chiave, _, valore = coppia.partition("=")
+        if chiave:
+            parametri[unquote(chiave)] = unquote(valore)
+    return parametri
+
 
 def _contiene(testo: str, marcatori: tuple[str, ...]) -> bool:
     minuscolo = testo.lower()
@@ -306,6 +329,26 @@ class PasswordScaduta(AuthError):
     Il login non puo' completarsi da qui: la password va rinnovata sul sito
     o sull'app ufficiale, poi si riprova da capo.
     """
+
+
+class LoginBrowserError(AuthError):
+    """L'URL incollato dal browser non è il redirect OAuth atteso.
+
+    Attributo 'motivo': 'url' (non contiene eneldist://redirect, oppure
+    mancano i token/code) oppure 'state' (il redirect appartiene a un'altra
+    sessione di login: va rifatto l'accesso con l'URL mostrato, che rigenera
+    lo state a ogni step).
+    """
+
+    def __init__(self, motivo: str, msg: str = "") -> None:
+        super().__init__(msg or motivo)
+        self.motivo = motivo
+
+
+class CodiceNonValido(AuthError):
+    """Lo scambio dell'authorization code o l'autorizzazione nel browser è
+    stata rifiutata (invalid_grant, access_denied e simili): va rifatto il
+    login nel browser e incollato il redirect appena generato."""
 
 
 def _verifica_non_password_scaduta(testo: str) -> None:
@@ -610,20 +653,39 @@ class AuthClient:
             riscrivi=self._su_host,
         )
         login_page_html = await _leggi_testo(resp)
-        # Il parametro 'startURL' della pagina su cui atterriamo contiene un
-        # token 'source=...' generato dal server al primo hop, che il server
-        # pretende di riavere indietro nel campo 'startUrl' del passo
-        # successivo per validare che il login appartenga allo stesso flusso
-        # di autorizzazione - confermato confrontando con una richiesta reale
-        # riuscita: mandare un path nudo (senza questo token) produce un
-        # AuraClientInputException generico.
-        start_url_value = resp.url.query.get(
-            "startURL", "/PortaleClienti/setup/secur/RemoteAccessAuthorizationPage.apexp"
-        )
+        # Il campo loginUser 'startUrl' NON è il parametro startURL decodificato:
+        # nel codice JS di c:PED_Login (verificato su auraCmpDef con REA)
+        # doInit esegue window.location.href.split('startURL=')[1].split('%2F').join('/')
+        # lasciando '%3F', '%26' e '%253D' del token 'source' percent-encoded
+        # e mantenendo in coda i parametri che seguono 'startURL=' sull'host
+        # primario (login_hint/display/sdtd/dch). Su *.my.site.com Salesforce
+        # riordina la query mettendo dch/display/sdtd PRIMA di startURL:
+        # _estrai_start_url_flow li riporta in coda così il controller Apex
+        # riceve la stessa stringa dell'app ufficiale.
+        start_url_value = self._estrai_start_url_flow(str(resp.url))
         aura_page_uri = resp.url.path_qs
         referer = str(resp.url)
         resp.close()
         return login_page_html, start_url_value, aura_page_uri, referer
+
+    @staticmethod
+    def _estrai_start_url_flow(url: str) -> str:
+        """Estrae il valore 'startUrl' così come lo costruisce c:PED_Login.
+
+        Nel JS di PED_Login.doInit (auraCmpDef):
+            var startUrlsplit = window.location.href.split('startURL=')[1].split('%2F');
+            component.set("v.startUrl", startUrlsplit.join('/'));
+        Sull'host primario 'startURL=' è il primo parametro della query e
+        quindi include in coda '&login_hint=...&display=touch&sdtd=1&dch=...'.
+        Se invece 'startURL=' è preceduto da altri parametri (come su
+        *.my.site.com dove la query è ordinata alfabeticamente), conserva la
+        parte dopo 'startURL=' decodificando solo '%2F' -> '/'.
+        """
+        query = urlsplit(url).query
+        marker = "startURL="
+        if marker not in query:
+            return "/PortaleClienti/setup/secur/RemoteAccessAuthorizationPage.apexp"
+        return query.split(marker, 1)[1].replace("%2F", "/").replace("%2f", "/")
 
     async def _invia_credenziali(
         self,
@@ -1219,6 +1281,116 @@ class AuthClient:
             _salva_pagina_debug(testo, nome_file_debug)
         raise TroppeSessioni(testo[:500])
 
+    # -- Login via browser (l'unico che Imperva lascia passare) -------------
+
+    def _url_authorize_browser(self, email: str | None = None) -> str:
+        """URL /oauth2/authorize da far aprire all'utente in un browser reale
+        DOPO aver effettuato l'accesso su private.e-distribuzione.it.
+
+        Usa il flusso OAuth user-agent (response_type=token) SENZA
+        prompt=login e SENZA login_hint:
+        - Con prompt=login (o in un browser non ancora autenticato sul
+          portale), /oauth2/authorize redirige alla pagina di login di
+          edistribuzione.my.site.com, dove PED_LoginController.loginUser
+          rifiuta le credenziali valide con 'KO: Errore Tecnico' anche in un
+          browser reale.
+        - Invece, accedendo prima su https://private.e-distribuzione.it/PortaleClienti/s/login/
+          e aprendo poi questo URL nella stessa finestra del browser,
+          Salesforce riusa la sessione già attiva su private.e-distribuzione.it
+          ed emette subito eneldist://redirect#access_token=...&refresh_token=...
+          senza passare da edistribuzione.my.site.com e senza richiedere una
+          seconda chiamata POST a /oauth2/token da Home Assistant.
+        """
+        del email
+        self._code_verifier, _ = _make_pkce_pair()
+        self._oauth_state = _b64url(secrets.token_bytes(16))
+        params = {
+            "nonce": _b64url(secrets.token_bytes(16)),
+            "display": "touch",
+            "response_type": "token",
+            "scope": OAUTH_SCOPE,
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "client_id": OAUTH_CLIENT_ID,
+            "state": self._oauth_state,
+        }
+        return f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
+
+    async def async_scambia_url_browser(self, redirect_url: str) -> OAuthTokens:
+        """Completa il login fatto nel browser dall'utente.
+
+        Accetta sia l'indirizzo 'eneldist://redirect...' da solo sia l'intera
+        riga della Console sviluppatori del browser che lo contiene (es.
+        "Failed to launch 'eneldist://redirect#access_token=...' because the
+        scheme does not have a registered handler.").
+
+        Supporta entrambi i formati di redirect OAuth:
+        - Fragment (#access_token=...&refresh_token=...&state=...): generato
+          da _url_authorize_browser (response_type=token); restituisce
+          direttamente i token senza contattare /oauth2/token.
+        - Query (?code=...&state=...): retrocompatibilità col flusso
+          Authorization Code + PKCE; scambia 'code' sul token endpoint.
+        """
+        testo = (redirect_url or "").strip()
+        match = _RE_REDIRECT_APP.search(testo)
+        url_trovato = match.group(0) if match is not None else testo
+        parti = urlsplit(url_trovato)
+        if parti.scheme != "eneldist" or (not parti.fragment and not parti.query):
+            raise LoginBrowserError("url")
+
+        parametri = _parametri_redirect(url_trovato)
+        if "error" in parametri:
+            descrizione = parametri.get("error_description", "").replace("+", " ")
+            if _contiene(f"{parametri['error']} {descrizione}", _MARCATORI_BLOCCO_SICUREZZA):
+                raise AccessoBloccato(
+                    f"E-Distribuzione blocca l'app OAuth: {parametri['error']} ({descrizione})"
+                )
+            raise CodiceNonValido(
+                f"Autorizzazione nel browser rifiutata: {parametri['error']} ({descrizione})"
+            )
+
+        state_ricevuto = parametri.get("state", "")
+        if self._oauth_state is None or not secrets.compare_digest(
+            state_ricevuto, self._oauth_state
+        ):
+            raise LoginBrowserError("state")
+
+        if "access_token" in parametri or "refresh_token" in parametri:
+            if not parametri.get("access_token") or not parametri.get("refresh_token"):
+                raise LoginBrowserError("url")
+            return self._tokens_from_payload(parametri)
+
+        codice = parametri.get("code")
+        if not codice:
+            raise LoginBrowserError("url")
+        return await self._con_fallback_host(
+            lambda: self._async_exchange_code_browser(codice),
+            "Scambio del codice OAuth",
+        )
+
+    async def _async_exchange_code_browser(self, code: str) -> OAuthTokens:
+        """_async_exchange_code con l'errore OAuth mappato su CodiceNonValido:
+        un 'invalid_grant' qui significa codice scaduto o già usato, non un
+        problema di parsing."""
+        data = {
+            "code": code,
+            "code_verifier": self._code_verifier,
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "client_id": OAUTH_CLIENT_ID,
+            "grant_type": "authorization_code",
+        }
+        async with self._session.post(
+            self._su_host(OAUTH_TOKEN_URL), data=data, headers=_headers_app()
+        ) as resp:
+            testo = await _leggi_testo(resp)
+            _verifica_non_bloccato(testo)
+            payload = self._json_token(testo, resp.status)
+        if "error" in payload:
+            raise CodiceNonValido(
+                f"Scambio del codice rifiutato: {payload.get('error')} - "
+                f"{payload.get('error_description', '')[:200]}"
+            )
+        return self._tokens_from_payload(payload)
+
     # -- Scambio/refresh del token ------------------------------------------
 
     async def _async_exchange_code(self, code: str) -> OAuthTokens:
@@ -1397,20 +1569,21 @@ class AuthClient:
         return nome_cookie
 
     def _estrai_token_aura_login(self, html: str) -> str:
-        """Token CSRF della pagina login, da cookie o dal campo inline.
+        """Token CSRF della pagina login dal cookie indicato in auraConfig.
 
-        private.e-distribuzione.it espone il nome del cookie in
-        auraConfig.eikoocnekot; il fallback *.my.site.com espone invece
-        direttamente ConnectCSRFToken. Il valore va copiato così com'è in
-        aura.token su tutte le azioni della pagina.
+        Verificato su aura_prod.js con REA:
+            a.token ? YK($A.d, a.token) : a.eikoocnekot && YK($A.d, ZK(a.eikoocnekot)),
+            a.ConnectCSRFToken && ($A.d.ix = a.ConnectCSRFToken)
+        aura.token ($A.d.Ec) viene valorizzato SOLO da 'token' o dal cookie
+        indicato da 'eikoocnekot'; ConnectCSRFToken ($A.d.ix) appartiene
+        invece a getConnectCsrfToken() per la Connect REST API e NON viene
+        mai inviato come aura.token. Quando exposeCsrfToken è false e non
+        c'è eikoocnekot (come su *.my.site.com), $A.d.Ec resta null ('null').
         """
         cfg = self._estrai_aura_config_dict(html, "login")
         nome_cookie = cfg.get("eikoocnekot") or cfg.get("token")
         if nome_cookie:
             return self._aura_cookie_token(nome_cookie)
-        token_inline = cfg.get("ConnectCSRFToken")
-        if isinstance(token_inline, str) and token_inline:
-            return token_inline
         raise ParsingError("Token CSRF Aura assente in auraConfig (login)")
 
     @classmethod
